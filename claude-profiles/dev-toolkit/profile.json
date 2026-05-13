@@ -1,6 +1,5 @@
 {
   "mcpServers": {
     "fs": {"type": "stdio", "command": "echo", "args": ["mock"]}
-  },
-  "_model": "sonnet"
+  }
 }
