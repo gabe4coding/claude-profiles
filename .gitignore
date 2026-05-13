@@ -1,5 +1,4 @@
-# Local builds
-claude-profiles
-claude-profiles-test
-cmd/claude-profiles/claude-profiles
+# Local builds (anchored to repo root so the claude-profiles/ fixture dir is unaffected)
+/claude-profiles-test
+/cmd/claude-profiles/claude-profiles
 *.test
