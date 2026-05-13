@@ -1,1 +1,9 @@
-{"mcpServers": {"x": {"type": "http", "url": "https://example.com"}}}
+{
+  "_description": "Smoke-test fixture \u2014 confirms upstream sync brings new profiles down",
+  "mcpServers": {
+    "x": {
+      "type": "http",
+      "url": "https://example.com"
+    }
+  }
+}

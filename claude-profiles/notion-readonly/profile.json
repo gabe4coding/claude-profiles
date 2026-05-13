@@ -1,5 +1,9 @@
 {
+  "_description": "Read-only Notion access \u2014 search, fetch, and inspect pages without write permissions",
   "mcpServers": {
-    "notion": {"type": "http", "url": "https://mcp.notion.com/mcp"}
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    }
   }
 }
