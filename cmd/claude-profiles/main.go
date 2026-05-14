@@ -8,12 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 func main() {
 	args := os.Args[1:]
+	// Port any state written by older versions of the CLI to the new
+	// ~/.claude-profiles/ root + unified profile format. Idempotent.
+	migrateLegacyLayout()
 	// Fire background sync for every registered repo whose lastSync is stale.
 	// Runs ahead of any command so repo profiles seen by this invocation come
 	// from the freshest local cache. The sync itself completes async.
@@ -40,6 +44,8 @@ func main() {
 		cmdHookSessionStart()
 	case "doctor":
 		cmdDoctor()
+	case "probe":
+		cmdProbe(args[1:])
 	case "edit":
 		cmdEdit(args[1:])
 	case "delete", "rm":
@@ -321,16 +327,149 @@ func cmdEdit(args []string) {
 	if !profileExists(arg) {
 		fatal(fmt.Errorf("profile not found: %s", arg))
 	}
+	if !isTTY() {
+		openProfileInEditor(arg)
+		return
+	}
+	runEditMenu(arg)
+}
+
+func openProfileInEditor(name string) {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, profilePath(arg))
+	cmd := exec.Command(editor, profilePath(name))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fatal(err)
+	}
+}
+
+// runEditMenu drives the interactive edit flow: per-server allow/deny tooling,
+// session settings, raw $EDITOR escape hatch. Loops until the user picks Done
+// (or aborts with Esc). State is reloaded from disk each iteration so the
+// $EDITOR branch picks up.
+func runEditMenu(name string) {
+	for {
+		p, err := loadProfileAt(profilePath(name))
+		if err != nil {
+			fatal(err)
+		}
+		action := pickEditAction(name, p)
+		switch action {
+		case "tools":
+			manageToolFilters(p, name)
+			if err := saveProfile(name, p); err != nil {
+				fatal(err)
+			}
+		case "settings":
+			configureSettings(p)
+			if err := saveProfile(name, p); err != nil {
+				fatal(err)
+			}
+		case "editor":
+			openProfileInEditor(name)
+		case "done", "":
+			return
+		}
+	}
+}
+
+// ── probe ─────────────────────────────────────────────────────────────────────
+
+// cmdProbe runs FetchTools against one or all MCP servers in a profile and
+// prints the raw error verbatim — useful when the edit menu collapses a
+// failure to "Could not reach …".
+func cmdProbe(args []string) {
+	if len(args) == 0 {
+		picked, err := pickProfile()
+		if err != nil {
+			fatal(err)
+		}
+		args = []string{picked}
+	}
+	loc, err := resolveProfileLocation(args[0])
+	if err != nil {
+		fatal(err)
+	}
+	p, err := loadProfileAt(loc.JSONPath)
+	if err != nil {
+		fatal(err)
+	}
+	if len(p.McpServers) == 0 {
+		info("Profile %s has no MCP servers.", loc.QualifiedID)
+		return
+	}
+
+	targets := []string{}
+	if len(args) > 1 {
+		if _, ok := p.McpServers[args[1]]; !ok {
+			known := make([]string, 0, len(p.McpServers))
+			for k := range p.McpServers {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			fatal(fmt.Errorf("server %q not found in %s — servers: %s",
+				args[1], loc.QualifiedID, strings.Join(known, ", ")))
+		}
+		targets = append(targets, args[1])
+	} else {
+		for k := range p.McpServers {
+			targets = append(targets, k)
+		}
+		sort.Strings(targets)
+	}
+
+	for _, sname := range targets {
+		probeOne(loc.QualifiedID, sname, p.McpServers[sname])
+	}
+}
+
+func probeOne(profile, sname string, cfg ServerConfig) {
+	fmt.Fprintln(os.Stderr)
+	title("probe %s · %s", profile, sname)
+	t := cfg.Type
+	if t == "" {
+		t = "http"
+	}
+	info("  type:    %s", t)
+	switch t {
+	case "stdio":
+		info("  command: %s %s", cfg.Command, strings.Join(cfg.Args, " "))
+	default:
+		info("  url:     %s", cfg.URL)
+		if loadToken(cfg.URL) != "" {
+			info("  token:   cached (Bearer …)")
+		} else {
+			info("  token:   none cached — OAuth will trigger on 401")
+		}
+	}
+
+	start := time.Now()
+	tools, err := FetchTools(cfg, sname)
+	elapsed := time.Since(start).Round(time.Millisecond)
+	info("  elapsed: %s", elapsed)
+
+	if err != nil {
+		switch {
+		case errors.Is(err, errNeedsAuth):
+			warn("  result:  AUTH REQUIRED")
+		default:
+			warn("  result:  FAILED")
+		}
+		fmt.Fprintf(os.Stderr, "  error:   %v\n", err)
+		return
+	}
+	success("  result:  OK — %d tool(s)", len(tools))
+	for _, tt := range tools {
+		marker := ""
+		if tt.ReadOnlyHint {
+			marker = " " + styleReadOnly.Render("[R]")
+		}
+		fmt.Fprintf(os.Stderr, "    · %s%s\n", shortToolName(tt.Name), marker)
 	}
 }
 
@@ -356,11 +495,7 @@ func cmdDelete(args []string) {
 	if !confirm(fmt.Sprintf("Delete %q?", name)) {
 		return
 	}
-	// Remove flat OR folder format
-	flat := filepath.Join(profilesDir, name+".json")
-	folder := filepath.Join(profilesDir, name)
-	os.Remove(flat)
-	os.RemoveAll(folder)
+	os.RemoveAll(filepath.Join(profilesDir(), name))
 	success("Deleted.")
 }
 
@@ -418,7 +553,7 @@ func cmdImport(args []string) {
 		}
 	}
 
-	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(profilePath(name)), 0o755); err != nil {
 		fatal(err)
 	}
 	if err := os.WriteFile(profilePath(name), append(data, '\n'), 0o644); err != nil {
@@ -599,30 +734,15 @@ func cmdCopy(args []string) {
 			fmt.Fprintln(os.Stderr, "Aborted.")
 			return
 		}
-		// Remove existing in either format
-		os.Remove(filepath.Join(profilesDir, dstName+".json"))
-		os.RemoveAll(filepath.Join(profilesDir, dstName))
+		os.RemoveAll(filepath.Join(profilesDir(), dstName))
 	}
 
-	// If source has settings.json, write folder format; else flat.
-	if loc.SettingsPath != "" {
-		dstDir := filepath.Join(profilesDir, dstName)
-		if err := os.MkdirAll(dstDir, 0o755); err != nil {
-			fatal(err)
-		}
-		if err := copyFile(loc.JSONPath, filepath.Join(dstDir, "profile.json")); err != nil {
-			fatal(err)
-		}
-		if err := copyFile(loc.SettingsPath, filepath.Join(dstDir, "settings.json")); err != nil {
-			fatal(err)
-		}
-	} else {
-		if err := os.MkdirAll(profilesDir, 0o755); err != nil {
-			fatal(err)
-		}
-		if err := copyFile(loc.JSONPath, filepath.Join(profilesDir, dstName+".json")); err != nil {
-			fatal(err)
-		}
+	p, err := loadProfileAt(loc.JSONPath)
+	if err != nil {
+		fatal(err)
+	}
+	if err := saveProfile(dstName, p); err != nil {
+		fatal(err)
 	}
 	success("Copied %s → %s (local)", srcID, dstName)
 }
@@ -667,7 +787,10 @@ Commands:
                        /switch opens the profile picker.
   doctor             Run sanity checks (claude binary, hook resolution,
                        profile JSON, stale marker, session dir) and report.
-  edit [name]        Open local profile in $EDITOR (interactive if omitted)
+  probe <profile>    Call FetchTools against each MCP server in the profile
+   [server]            (or just <server>) and print the raw error/tool list.
+  edit [name]        Edit a local profile: manage MCP tool allow/deny,
+                       session settings, or open the JSON in $EDITOR.
   delete [name]      Delete a local profile (interactive if omitted)
   export [name]      Print profile JSON to stdout (interactive if omitted)
   import [file]      Import a profile JSON file (prompts if omitted)
@@ -681,8 +804,8 @@ Commands:
   help               Show this help
 
 Profiles directory: %s
-  Override with: CLAUDE_MCP_PROFILES_DIR=/path claude-profiles
+  Override the whole root with: CLAUDE_PROFILES_ROOT=/path claude-profiles
 
 Direct launch shorthand: claude-profiles <profile-name> [claude-args...]
-`, profilesDir)
+`, profilesDir())
 }

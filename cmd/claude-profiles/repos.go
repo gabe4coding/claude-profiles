@@ -14,12 +14,7 @@ import (
 	"time"
 )
 
-const (
-	reposConfigBaseName = "mcp-profiles-repos.json"
-	reposCacheBaseName  = "mcp-profiles-repos"
-	syncThrottle        = 5 * time.Minute
-	reposProfileDir     = "claude-profiles" // folder inside each repo
-)
+const syncThrottle = 5 * time.Minute
 
 // RepoConfig describes one registered remote repo.
 type RepoConfig struct {
@@ -31,20 +26,21 @@ type RepoConfig struct {
 	LastSyncErr  string `json:"lastSyncErr,omitempty"`
 }
 
-// ReposConfig is the on-disk shape of mcp-profiles-repos.json.
+// ReposConfig is the on-disk shape of ~/.claude-profiles/repos.json.
 type ReposConfig struct {
 	Repos []RepoConfig `json:"repos"`
 }
 
-var (
-	reposConfigPath = filepath.Join(mustHomeDir(), ".claude", reposConfigBaseName)
-	reposCacheDir   = filepath.Join(mustHomeDir(), ".claude", reposCacheBaseName)
-)
+// reposConfigPath / reposCacheDir are functions so CLAUDE_PROFILES_ROOT
+// overrides take effect immediately. reposProfileDir is the per-repo
+// directory we expect remote repos to publish profiles in.
+func reposConfigPath() string { return reposConfigPathFn() }
+func reposCacheDir() string   { return reposCacheDirPath() }
 
 // ── Config I/O ────────────────────────────────────────────────────────────────
 
 func loadReposConfig() (*ReposConfig, error) {
-	data, err := os.ReadFile(reposConfigPath)
+	data, err := os.ReadFile(reposConfigPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &ReposConfig{}, nil
@@ -63,10 +59,10 @@ func saveReposConfig(cfg *ReposConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(reposConfigPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(reposConfigPath()), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(reposConfigPath, append(data, '\n'), 0o644)
+	return os.WriteFile(reposConfigPath(), append(data, '\n'), 0o644)
 }
 
 // ── URL normalisation + cache path ────────────────────────────────────────────
@@ -91,7 +87,7 @@ func normaliseURL(raw string) string {
 
 func repoCachePath(url string) string {
 	h := sha256.Sum256([]byte(normaliseURL(url)))
-	return filepath.Join(reposCacheDir, fmt.Sprintf("%x", h[:10]))
+	return filepath.Join(reposCacheDir(), fmt.Sprintf("%x", h[:10]))
 }
 
 // defaultAlias derives a short alias from the URL ("github.com/foo/bar" → "bar").
@@ -225,14 +221,16 @@ func kickAutoSync() {
 
 // ProfileLocation is a resolved source for one profile.
 type ProfileLocation struct {
-	Name         string // bare profile name (no alias prefix)
-	QualifiedID  string // "name" for local, "alias/name" for repo
-	JSONPath     string // absolute path to the JSON file
-	SettingsPath string // absolute path to sibling settings.json, "" if absent
-	RepoAlias    string // empty for local
+	Name        string // bare profile name (no alias prefix)
+	QualifiedID string // "name" for local, "alias/name" for repo
+	JSONPath    string // absolute path to profile.json
+	RepoAlias   string // empty for local
 }
 
-// listRepoProfiles returns all profiles found in registered repos.
+// listRepoProfiles returns all profiles found in registered repos. Each repo
+// is expected to publish profiles under <repo-root>/.claude-profiles/<name>/profile.json.
+// For backward compatibility we also recognise <repo-root>/claude-profiles/…
+// if the new hidden directory is absent.
 func listRepoProfiles() []ProfileLocation {
 	cfg, err := loadReposConfig()
 	if err != nil || len(cfg.Repos) == 0 {
@@ -240,7 +238,10 @@ func listRepoProfiles() []ProfileLocation {
 	}
 	var out []ProfileLocation
 	for _, r := range cfg.Repos {
-		root := filepath.Join(repoCachePath(r.URL), reposProfileDir)
+		root := repoProfilesRoot(repoCachePath(r.URL))
+		if root == "" {
+			continue
+		}
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			continue
@@ -254,21 +255,29 @@ func listRepoProfiles() []ProfileLocation {
 			if _, err := os.Stat(jsonPath); err != nil {
 				continue
 			}
-			settingsPath := filepath.Join(root, name, "settings.json")
-			if _, err := os.Stat(settingsPath); err != nil {
-				settingsPath = ""
-			}
 			out = append(out, ProfileLocation{
-				Name:         name,
-				QualifiedID:  r.Alias + "/" + name,
-				JSONPath:     jsonPath,
-				SettingsPath: settingsPath,
-				RepoAlias:    r.Alias,
+				Name:        name,
+				QualifiedID: r.Alias + "/" + name,
+				JSONPath:    jsonPath,
+				RepoAlias:   r.Alias,
 			})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].QualifiedID < out[j].QualifiedID })
 	return out
+}
+
+// repoProfilesRoot returns the first directory inside the repo that contains
+// our published profiles. Prefers `.claude-profiles/` (new convention); falls
+// back to `claude-profiles/` so users syncing older repos still see them.
+func repoProfilesRoot(repoRoot string) string {
+	for _, sub := range []string{reposProfileDir, "claude-profiles"} {
+		p := filepath.Join(repoRoot, sub)
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 // resolveProfileLocation finds a profile by name, accepting either a bare

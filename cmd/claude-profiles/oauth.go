@@ -17,15 +17,10 @@ import (
 	"time"
 )
 
-var (
-	tokenDir  = filepath.Join(mustHomeDir(), ".claude", "mcp-profiles-tokens")
-	clientDir = filepath.Join(mustHomeDir(), ".claude", "mcp-profiles-clients")
-)
-
-func mustHomeDir() string {
-	h, _ := os.UserHomeDir()
-	return h
-}
+// Token + client-registration caches live under the unified root. Defined as
+// functions so CLAUDE_PROFILES_ROOT changes during tests take effect.
+func tokenDir() string  { return tokensDirPath() }
+func clientDir() string { return clientsDirPath() }
 
 func cacheKey(s string) string {
 	h := sha256.Sum256([]byte(s))
@@ -43,7 +38,7 @@ type tokenData struct {
 }
 
 func tokenPath(serverURL string) string {
-	return filepath.Join(tokenDir, cacheKey(serverURL)+".json")
+	return filepath.Join(tokenDir(), cacheKey(serverURL)+".json")
 }
 
 func loadToken(serverURL string) string {
@@ -67,7 +62,7 @@ func loadToken(serverURL string) string {
 }
 
 func saveToken(serverURL string, td tokenData) {
-	os.MkdirAll(tokenDir, 0o700)
+	os.MkdirAll(tokenDir(), 0o700)
 	data, _ := json.MarshalIndent(td, "", "  ")
 	os.WriteFile(tokenPath(serverURL), data, 0o600)
 }
@@ -104,7 +99,7 @@ func refreshToken(endpoint, rt, clientID, serverURL string) string {
 // ── Dynamic client registration ───────────────────────────────────────────────
 
 func clientPath(endpoint string) string {
-	return filepath.Join(clientDir, cacheKey(endpoint)+".json")
+	return filepath.Join(clientDir(), cacheKey(endpoint)+".json")
 }
 
 func getOrRegisterClient(registrationEndpoint, redirectURI string) (string, error) {
@@ -137,7 +132,7 @@ func getOrRegisterClient(registrationEndpoint, redirectURI string) (string, erro
 	if clientID == "" {
 		return "", fmt.Errorf("no client_id in registration response")
 	}
-	os.MkdirAll(clientDir, 0o700)
+	os.MkdirAll(clientDir(), 0o700)
 	data, _ := json.Marshal(map[string]string{"client_id": clientID})
 	os.WriteFile(path, data, 0o600)
 	return clientID, nil
@@ -172,6 +167,53 @@ func discoverOAuth(resourceMetaURL string) (*oauthMeta, error) {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+// discoverOAuthMetadata locates the authorization server for a resource by
+// trying, in order:
+//
+//  1. The `resource_metadata=<url>` parameter advertised in the 401's
+//     WWW-Authenticate header (per RFC 9728). Compliant servers like
+//     amplitude/notion use this path.
+//  2. RFC 9728 well-known: `<origin>/.well-known/oauth-protected-resource`,
+//     which points at the authorization server. Datadog's MCP serves this
+//     but does NOT set the WWW-Authenticate header.
+//  3. RFC 8414 well-known: `<origin>/.well-known/oauth-authorization-server`,
+//     the AS metadata directly, for servers that conflate resource and AS.
+//
+// Returns the discovered AS metadata, or an explicit error listing what was
+// tried — so probe/edit shows a useful message when a server is unauthable.
+func discoverOAuthMetadata(serverURL, wwwAuth string) (*oauthMeta, error) {
+	if rmURL := parseResourceMetadata(wwwAuth); rmURL != "" {
+		if meta, err := discoverOAuth(rmURL); err == nil {
+			return meta, nil
+		}
+	}
+	origin, err := originOf(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	if meta, err := discoverOAuth(origin + "/.well-known/oauth-protected-resource"); err == nil {
+		return meta, nil
+	}
+	if body, err := httpGet(origin + "/.well-known/oauth-authorization-server"); err == nil {
+		var meta oauthMeta
+		if json.Unmarshal(body, &meta) == nil && meta.AuthorizationEndpoint != "" {
+			return &meta, nil
+		}
+	}
+	return nil, fmt.Errorf("no OAuth metadata at %s (tried WWW-Authenticate, /.well-known/oauth-protected-resource, /.well-known/oauth-authorization-server)", origin)
+}
+
+func originOf(serverURL string) (string, error) {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("server url has no scheme/host: %s", serverURL)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func httpGet(u string) ([]byte, error) {
@@ -231,11 +273,7 @@ func waitCallback(port int) (code string, err error) {
 // ── Full OAuth flow ───────────────────────────────────────────────────────────
 
 func oauthFlow(serverURL, wwwAuth string) (string, error) {
-	rmURL := parseResourceMetadata(wwwAuth)
-	if rmURL == "" {
-		return "", fmt.Errorf("no resource_metadata in WWW-Authenticate")
-	}
-	meta, err := discoverOAuth(rmURL)
+	meta, err := discoverOAuthMetadata(serverURL, wwwAuth)
 	if err != nil {
 		return "", fmt.Errorf("OAuth discovery: %w", err)
 	}

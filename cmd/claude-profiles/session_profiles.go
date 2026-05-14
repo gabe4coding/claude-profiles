@@ -11,10 +11,7 @@ import (
 // exit so backgrounded sessions remain mappable in the hub long after their
 // originating wrapper is gone.
 
-func sessionProfilesPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "claude-profiles-sessions.json")
-}
+func sessionProfilesPath() string { return sessionsLedgerPath() }
 
 func loadSessionProfiles() map[string]string {
 	data, err := os.ReadFile(sessionProfilesPath())

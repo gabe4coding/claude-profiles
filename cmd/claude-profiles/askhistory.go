@@ -23,10 +23,7 @@ type askHistoryFile struct {
 
 const askHistoryMax = 50
 
-func askHistoryPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "claude-profiles-asks.json")
-}
+func askHistoryPath() string { return asksPath() }
 
 func loadAskHistory() []AskHistoryEntry {
 	data, err := os.ReadFile(askHistoryPath())

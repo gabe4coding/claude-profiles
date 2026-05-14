@@ -24,8 +24,6 @@ import (
 // kills the running claude (SIGTERM to its parent), so the user doesn't need
 // to type /exit themselves.
 
-const nextProfileMarkerFile = ".claude-profiles-next"
-
 const switchSlashCommand = `---
 description: Switch the active claude-profiles profile. Pass a profile id directly, or describe an intent in plain English and the agent will pick the best-fit profile from the list.
 argument-hint: <profile-id | intent>
@@ -41,7 +39,7 @@ Decide the target profile id:
 
 Then use Bash to run EXACTLY this one-liner (substitute the chosen profile id into <TARGET>; can be empty). The env guard at the front refuses to kill the session if /switch is invoked outside the wrapper:
 
-if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude" && printf "%s" "<TARGET>" > "$HOME/.claude/.claude-profiles-next" && kill $PPID
+if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude-profiles" && printf "%s" "<TARGET>" > "$HOME/.claude-profiles/next-marker" && kill $PPID
 
 Briefly tell the user which profile is queued (or that the picker will open).
 `
@@ -125,14 +123,11 @@ func cmdRun(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		settingsPath := loc.SettingsPath
-		if settingsPath == "" && loc.RepoAlias == "" {
-			settingsPath = localSettingsPath(loc.Name)
-		}
-		// Augment whatever settings the profile already has with our
-		// SessionStart hook (which briefs the agent on /switch + the
-		// available-profile list).
-		if augmented, err := runSettingsWithHook(p, settingsPath); err == nil {
+		// Settings always live inline in profile.Settings now. Augment with
+		// the SessionStart hook (which briefs the agent on /switch + the
+		// available-profile list) and pass it to claude via a temp file.
+		settingsPath := ""
+		if augmented, err := runSettingsWithHook(p, ""); err == nil {
 			settingsPath = augmented
 			// Clear inline _settings on the in-memory profile so claudeFlags
 			// picks up the file path and doesn't double-emit --settings.
@@ -303,19 +298,16 @@ func projectSessionsDir() string {
 // non-obvious bit: ".claude" inside a path becomes "-claude", which produces
 // the characteristic "--claude" double-dash for "/.claude".
 func encodedSessionsDir(cwd string) string {
-	home, _ := os.UserHomeDir()
 	encoded := strings.ReplaceAll(cwd, "/", "-")
 	encoded = strings.ReplaceAll(encoded, ".", "-")
-	return filepath.Join(home, ".claude", "projects", encoded)
+	return filepath.Join(claudeRootDirPath(), "projects", encoded)
 }
 
-// cleanStaleMarker removes any pre-existing ~/.claude/<nextProfileMarkerFile>
-// at wrapper startup. The marker is supposed to live for milliseconds inside
-// one loop iteration; finding one at startup is always a stale leftover from
-// a prior crash. We warn if we delete anything so the user knows.
+// cleanStaleMarker removes any pre-existing marker file at wrapper startup.
+// The marker is supposed to live for milliseconds inside one loop iteration;
+// finding one at startup is always a stale leftover from a prior crash.
 func cleanStaleMarker() {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".claude", nextProfileMarkerFile)
+	p := nextMarkerPath()
 	info, err := os.Stat(p)
 	if err != nil {
 		return
@@ -325,13 +317,12 @@ func cleanStaleMarker() {
 	_ = os.Remove(p)
 }
 
-// consumeNextProfileMarker reads and removes ~/.claude/<nextProfileMarkerFile>.
+// consumeNextProfileMarker reads and removes the /switch handoff marker.
 // Returns (raw, exists). "exists" is true when the marker file was present —
 // even if its content was empty (empty == "open the picker"). When false the
 // loop exits.
 func consumeNextProfileMarker() (string, bool) {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".claude", nextProfileMarkerFile)
+	p := nextMarkerPath()
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return "", false
@@ -341,13 +332,11 @@ func consumeNextProfileMarker() (string, bool) {
 }
 
 // ensureSwitchSlashCommand installs ~/.claude/commands/switch.md and keeps it
-// up to date. We rewrite only when the file content has actually changed,
-// which is the right behaviour for a tool-managed prompt — the body evolves
-// with the wrapper code and any user-side edits would silently break the
-// protocol the wrapper expects.
+// up to date. The commands directory belongs to Claude Code (not us), so we
+// don't move it into ~/.claude-profiles/. We rewrite only when the file
+// content has actually changed.
 func ensureSwitchSlashCommand() error {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".claude", "commands")
+	dir := filepath.Join(claudeRootDirPath(), "commands")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -404,14 +393,14 @@ func shortSession(id string) string {
 
 const sessionStartHookHeader = `# claude-profiles: in-session profile switching
 
-You are running inside the ` + "`claude-profiles run`" + ` wrapper. The user can switch profiles mid-session via the ` + "`/switch`" + ` slash command. When they do, write the chosen profile id to ~/.claude/.claude-profiles-next and end this session; the wrapper will relaunch claude with that profile and resume the conversation.
+You are running inside the ` + "`claude-profiles run`" + ` wrapper. The user can switch profiles mid-session via the ` + "`/switch`" + ` slash command. When they do, write the chosen profile id to ~/.claude-profiles/next-marker and end this session; the wrapper will relaunch claude with that profile and resume the conversation.
 
 Protocol when ` + "`/switch <argument>`" + ` is invoked:
 1. If <argument> is empty, write an empty marker and exit — the wrapper will show its picker.
 2. If <argument> exactly matches one of the profile ids listed below, write that id.
 3. Otherwise treat <argument> as free-form intent and pick the profile from the list whose description best matches. If two are roughly tied or none is a clear fit, ask the user ONE short clarifying question before deciding.
 4. To execute, use the Bash tool to run EXACTLY (the env guard refuses to kill the session if /switch is invoked outside the wrapper):
-   if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude" && printf "%s" "<chosen-profile-id>" > "$HOME/.claude/.claude-profiles-next" && kill $PPID
+   if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude-profiles" && printf "%s" "<chosen-profile-id>" > "$HOME/.claude-profiles/next-marker" && kill $PPID
 
 Acknowledge the switch briefly to the user (which profile and why) before running the command.
 
@@ -478,8 +467,10 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 	})
 	settings["hooks"] = hooks
 
-	home, _ := os.UserHomeDir()
-	out := filepath.Join(home, ".claude", "claude-profiles-run-settings.json")
+	out := runSettingsPath()
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return "", err
+	}
 	data, _ := json.MarshalIndent(settings, "", "  ")
 	if err := os.WriteFile(out, data, 0o644); err != nil {
 		return "", err

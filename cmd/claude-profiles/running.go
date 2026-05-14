@@ -24,10 +24,7 @@ type RunningWrapper struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
-func runningDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "claude-profiles-run")
-}
+func runningDir() string { return runDirPath() }
 
 func pidfilePath(pid int) string {
 	return filepath.Join(runningDir(), fmt.Sprintf("%d.json", pid))

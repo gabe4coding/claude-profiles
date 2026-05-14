@@ -122,8 +122,7 @@ func resolveSymlink(p string) string {
 }
 
 func checkSwitchCommand() docCheck {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".claude", "commands", "switch.md")
+	path := filepath.Join(claudeRootDirPath(), "commands", "switch.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return docCheck{"/switch slash command", "warn", "not installed yet — first run of any launch will install it"}
@@ -135,15 +134,16 @@ func checkSwitchCommand() docCheck {
 }
 
 func checkProfilesDir() docCheck {
-	info, err := os.Stat(profilesDir)
+	dir := profilesDir()
+	info, err := os.Stat(dir)
 	if err != nil {
-		return docCheck{"profiles dir", "warn", profilesDir + " — does not exist yet"}
+		return docCheck{"profiles dir", "warn", dir + " — does not exist yet"}
 	}
 	if !info.IsDir() {
-		return docCheck{"profiles dir", "fail", profilesDir + " — exists but is not a directory"}
+		return docCheck{"profiles dir", "fail", dir + " — exists but is not a directory"}
 	}
 	locs, _ := listAllLocations()
-	return docCheck{"profiles dir", "ok", fmt.Sprintf("%s (%d profile%s)", profilesDir, len(locs), plural(len(locs)))}
+	return docCheck{"profiles dir", "ok", fmt.Sprintf("%s (%d profile%s)", dir, len(locs), plural(len(locs)))}
 }
 
 // checkAllProfiles validates every profile (local + repo): JSON parse, MCP
@@ -168,21 +168,18 @@ func checkProfile(loc ProfileLocation) docCheck {
 		return docCheck{name, "fail", "cannot parse: " + err.Error()}
 	}
 	bits := []string{fmt.Sprintf("%d MCP server%s", len(p.McpServers), plural(len(p.McpServers)))}
-	if loc.SettingsPath != "" {
-		bits = append(bits, "sidecar settings.json")
-	} else if len(p.Settings) > 0 {
+	if len(p.Settings) > 0 {
 		var probe any
 		if err := json.Unmarshal(p.Settings, &probe); err != nil {
-			return docCheck{name, "fail", "inline _settings is not valid JSON: " + err.Error()}
+			return docCheck{name, "fail", "_settings is not valid JSON: " + err.Error()}
 		}
-		bits = append(bits, "inline _settings")
+		bits = append(bits, "settings")
 	}
 	return docCheck{name, "ok", strings.Join(bits, ", ")}
 }
 
 func checkStaleMarker() docCheck {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".claude", nextProfileMarkerFile)
+	p := nextMarkerPath()
 	info, err := os.Stat(p)
 	if err != nil {
 		return docCheck{"profile-switch marker", "ok", "absent (expected)"}

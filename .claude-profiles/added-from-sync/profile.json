@@ -1,5 +1,5 @@
 {
-  "_description": "Smoke-test fixture \u2014 confirms upstream sync brings new profiles down",
+  "_description": "Smoke-test fixture — confirms upstream sync brings new profiles down",
   "mcpServers": {
     "x": {
       "type": "http",

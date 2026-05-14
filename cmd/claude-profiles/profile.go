@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,37 +92,20 @@ func setPermissionMode(s map[string]any, mode string) {
 	s["permissions"] = p
 }
 
-var profilesDir = func() string {
-	if d := os.Getenv("CLAUDE_MCP_PROFILES_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "mcp-profiles")
-}()
+// profilesDir is the local-profiles directory. Defined as a function so
+// CLAUDE_PROFILES_ROOT changes during tests take effect immediately.
+func profilesDir() string { return profilesDirPath() }
 
-// profilePath returns the JSON path for a local profile. Folder-format profiles
-// (created by `copy` from a repo with settings.json) live at
-// <dir>/<name>/profile.json; flat-format ones at <dir>/<name>.json.
+// profilePath returns the JSON path for a local profile. Every profile is a
+// folder containing profile.json — this gives us a natural place to drop
+// future per-profile artifacts (CLAUDE.md, hooks, etc.) without changing the
+// loader.
 func profilePath(name string) string {
-	folder := filepath.Join(profilesDir, name, "profile.json")
-	if _, err := os.Stat(folder); err == nil {
-		return folder
-	}
-	return filepath.Join(profilesDir, name+".json")
-}
-
-// localSettingsPath returns the sibling settings.json path if the profile is in
-// folder format and the file exists, else "".
-func localSettingsPath(name string) string {
-	p := filepath.Join(profilesDir, name, "settings.json")
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	return ""
+	return filepath.Join(profilesDir(), name, "profile.json")
 }
 
 func listProfiles() ([]string, error) {
-	entries, err := os.ReadDir(profilesDir)
+	entries, err := os.ReadDir(profilesDir())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -131,24 +113,14 @@ func listProfiles() ([]string, error) {
 		return nil, err
 	}
 	var names []string
-	seen := map[string]bool{}
 	for _, e := range entries {
-		var name string
-		if e.IsDir() {
-			// Folder format: must contain profile.json
-			if _, err := os.Stat(filepath.Join(profilesDir, e.Name(), "profile.json")); err != nil {
-				continue
-			}
-			name = e.Name()
-		} else if strings.HasSuffix(e.Name(), ".json") {
-			name = strings.TrimSuffix(e.Name(), ".json")
-		} else {
+		if !e.IsDir() {
 			continue
 		}
-		if !seen[name] {
-			names = append(names, name)
-			seen[name] = true
+		if _, err := os.Stat(filepath.Join(profilesDir(), e.Name(), "profile.json")); err != nil {
+			continue
 		}
+		names = append(names, e.Name())
 	}
 	sort.Strings(names)
 	return names, nil
@@ -169,70 +141,29 @@ func loadProfile(name string) (*Profile, error) {
 	return &p, nil
 }
 
-// saveProfile writes a local profile.
-//   - flat  ~/.claude/mcp-profiles/<name>.json          if Settings is empty
-//   - folder ~/.claude/mcp-profiles/<name>/profile.json + settings.json otherwise
-//
-// Settings is never written inline into profile.json — always sidecar. Any
-// pre-existing format for this profile is cleaned up so we don't leave both
-// flat and folder copies behind.
+// saveProfile writes a local profile to <profilesDir>/<name>/profile.json with
+// every field — including _settings — inline. Folder-only format keeps room
+// for future per-profile artifacts (CLAUDE.md, hooks, …) without changing the
+// loader.
 func saveProfile(name string, p *Profile) error {
-	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+	dir := filepath.Join(profilesDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	flatPath := filepath.Join(profilesDir, name+".json")
-	folderDir := filepath.Join(profilesDir, name)
-	folderJSON := filepath.Join(folderDir, "profile.json")
-	folderSettings := filepath.Join(folderDir, "settings.json")
-
-	// Marshal profile.json without _settings (it lives in the sibling file)
-	out := struct {
-		Description string                  `json:"_description,omitempty"`
-		McpServers  map[string]ServerConfig `json:"mcpServers"`
-		DeniedTools []string                `json:"_deniedTools,omitempty"`
-	}{p.Description, p.McpServers, p.DeniedTools}
-	data, err := json.MarshalIndent(out, "", "  ")
+	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
-
-	if len(p.Settings) > 0 {
-		// Folder format. Remove any stale flat copy.
-		_ = os.Remove(flatPath)
-		if err := os.MkdirAll(folderDir, 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(folderJSON, append(data, '\n'), 0o644); err != nil {
-			return err
-		}
-		// Re-format settings.json so it's human-friendly on disk
-		var pretty bytes.Buffer
-		_ = json.Indent(&pretty, p.Settings, "", "  ")
-		if pretty.Len() == 0 {
-			pretty.Write(p.Settings)
-		}
-		pretty.WriteByte('\n')
-		return os.WriteFile(folderSettings, pretty.Bytes(), 0o644)
-	}
-
-	// Flat format. Remove any stale folder copy.
-	_ = os.RemoveAll(folderDir)
-	return os.WriteFile(flatPath, append(data, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(dir, "profile.json"), append(data, '\n'), 0o644)
 }
 
 func profileExists(name string) bool {
-	if _, err := os.Stat(filepath.Join(profilesDir, name+".json")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(profilesDir, name, "profile.json")); err == nil {
-		return true
-	}
-	return false
+	_, err := os.Stat(filepath.Join(profilesDir(), name, "profile.json"))
+	return err == nil
 }
 
-// loadProfileAt reads a profile JSON from any absolute path. If a sibling
-// settings.json lives next to it (folder format), the file content overrides
-// any inline _settings in profile.json.
+// loadProfileAt reads a unified profile JSON from any absolute path. The
+// caller is responsible for pointing at a profile.json (we don't auto-glob).
 func loadProfileAt(path string) (*Profile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -245,16 +176,13 @@ func loadProfileAt(path string) (*Profile, error) {
 	if p.McpServers == nil {
 		p.McpServers = map[string]ServerConfig{}
 	}
-	sibling := filepath.Join(filepath.Dir(path), "settings.json")
-	if sdata, err := os.ReadFile(sibling); err == nil {
-		p.Settings = sdata
-	}
 	return &p, nil
 }
 
 // claudeFlags returns CLI flags derived from the profile.
 //   - --disallowedTools  from DeniedTools
-//   - --settings         from sidecar file (if folder format) or inline JSON
+//   - --settings         augmented JSON written by SessionStart hook, or
+//                        inline Settings JSON straight from the profile.
 //
 // model and permission mode live inside Settings now, so no separate flags.
 func claudeFlags(p *Profile, settingsPath string) []string {

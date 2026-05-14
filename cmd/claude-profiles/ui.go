@@ -547,3 +547,129 @@ func shortToolName(full string) string {
 	}
 	return full
 }
+
+// ── Edit menu ─────────────────────────────────────────────────────────────────
+
+// pickEditAction renders the top-level edit menu for a local profile. Each
+// option label embeds a one-glance summary of the current state so the user
+// doesn't have to drill in to see what is set.
+func pickEditAction(name string, p *Profile) string {
+	servers := len(p.McpServers)
+	denied := len(p.DeniedTools)
+	toolsLabel := fmt.Sprintf("Manage MCP tool filters (%d server%s, %d denied)",
+		servers, plural(servers), denied)
+
+	s := parseSettings(p.Settings)
+	mode := getPermissionMode(s)
+	if mode == "" {
+		mode = "—"
+	}
+	model := getModel(s)
+	if model == "" {
+		model = "—"
+	}
+	settingsLabel := fmt.Sprintf("Session settings (mode: %s, model: %s)", mode, model)
+
+	var action string
+	err := runField(huh.NewSelect[string]().
+		Title("Edit " + name).
+		Options(
+			huh.NewOption(toolsLabel, "tools"),
+			huh.NewOption(settingsLabel, "settings"),
+			huh.NewOption("Open profile.json in $EDITOR", "editor"),
+			huh.NewOption("Done", "done"),
+		).
+		Value(&action))
+	handleAbort(err)
+	return action
+}
+
+// manageToolFilters lets the user pick a server, refetch its tools, and re-run
+// the same allow/deny picker used in `claude-profiles new`. A confirm gate
+// protects existing filters from being wiped by a no-op pass.
+func manageToolFilters(p *Profile, name string) {
+	if len(p.McpServers) == 0 {
+		warn("No MCP servers in this profile — add one via `claude-profiles edit %s` → $EDITOR, or `new` from scratch.", name)
+		return
+	}
+	for {
+		snames := make([]string, 0, len(p.McpServers))
+		for k := range p.McpServers {
+			snames = append(snames, k)
+		}
+		sort.Strings(snames)
+
+		opts := make([]huh.Option[string], 0, len(snames)+1)
+		for _, sname := range snames {
+			n := countServerDenied(p, sname)
+			tag := styleInfo.Render(fmt.Sprintf("(%d denied)", n))
+			opts = append(opts, huh.NewOption(fmt.Sprintf("%-24s %s", sname, tag), sname))
+		}
+		opts = append(opts, huh.NewOption("Back", ""))
+
+		var picked string
+		err := runField(huh.NewSelect[string]().
+			Title("Reconfigure tool filter — pick a server").
+			Options(opts...).
+			Value(&picked))
+		handleAbort(err)
+		if picked == "" {
+			return
+		}
+		reconfigureServerFilter(p, picked)
+		if err := saveProfile(name, p); err != nil {
+			fatal(err)
+		}
+	}
+}
+
+// reconfigureServerFilter re-fetches tools for sname, prompts the user before
+// discarding any pre-existing filter, then runs the same picker `new` uses.
+// Stays silent (and leaves state untouched) when the server can't be reached.
+func reconfigureServerFilter(p *Profile, sname string) {
+	cfg, ok := p.McpServers[sname]
+	if !ok {
+		return
+	}
+	if n := countServerDenied(p, sname); n > 0 {
+		info("  Current filter denies %d tool(s) for %q.", n, sname)
+		if !confirm("Replace this server's tool filter?") {
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "  Fetching available tools from %q...\n", sname)
+	tools, err := FetchTools(cfg, sname)
+	if err != nil {
+		if errors.Is(err, errNeedsAuth) {
+			warn("  Could not authenticate to %q — leaving filter unchanged.", sname)
+		} else {
+			warn("  Could not reach %q — leaving filter unchanged.", sname)
+		}
+		return
+	}
+	clearServerDeniedTools(p, sname)
+	info("  %d tool(s) found.", len(tools))
+	selectToolFilter(p, sname, tools)
+}
+
+func countServerDenied(p *Profile, sname string) int {
+	prefix := "mcp__" + sname + "__"
+	n := 0
+	for _, t := range p.DeniedTools {
+		if strings.HasPrefix(t, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func clearServerDeniedTools(p *Profile, sname string) {
+	prefix := "mcp__" + sname + "__"
+	kept := p.DeniedTools[:0]
+	for _, t := range p.DeniedTools {
+		if !strings.HasPrefix(t, prefix) {
+			kept = append(kept, t)
+		}
+	}
+	p.DeniedTools = kept
+}

@@ -40,8 +40,7 @@ type BackgroundedSession struct {
 }
 
 func rosterPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "daemon", "roster.json")
+	return filepath.Join(claudeRootDirPath(), "daemon", "roster.json")
 }
 
 func loadBackgroundedSessions() []BackgroundedSession {

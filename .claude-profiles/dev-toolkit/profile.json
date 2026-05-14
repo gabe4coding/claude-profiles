@@ -4,9 +4,12 @@
     "fs": {
       "type": "stdio",
       "command": "echo",
-      "args": [
-        "mock"
-      ]
+      "args": ["mock"]
     }
+  },
+  "_settings": {
+    "model": "sonnet",
+    "env": { "DEV_MODE": "true" },
+    "permissions": { "defaultMode": "auto" }
   }
 }

@@ -15,10 +15,7 @@ type recentsFile struct {
 	Profiles map[string]int64 `json:"profiles"`
 }
 
-func recentsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "claude-profiles-recent.json")
-}
+func recentsPath() string { return recentPath() }
 
 func loadRecents() map[string]int64 {
 	data, err := os.ReadFile(recentsPath())
