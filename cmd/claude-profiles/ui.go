@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -60,6 +62,20 @@ func runField(field huh.Field) error {
 		WithKeyMap(km).
 		WithTheme(claudeTheme()).
 		Run()
+}
+
+// runFieldBack is runField for sub-menus that want Esc to go back one level
+// instead of unwinding all the way to the hub. Returns ErrUserAborted on Esc
+// so the caller can early-return; everything else fatals as usual.
+func runFieldBack(field huh.Field) error {
+	err := runField(field)
+	if errors.Is(err, huh.ErrUserAborted) {
+		return err
+	}
+	if err != nil {
+		fatal(err)
+	}
+	return nil
 }
 
 // ── Styling ───────────────────────────────────────────────────────────────────
@@ -228,23 +244,21 @@ func pickBackgroundedSession(profile string, bgs []BackgroundedSession) *Backgro
 	if !isTTY() || len(bgs) == 0 {
 		return nil
 	}
-	opts := make([]huh.Option[string], 0, len(bgs)+1)
-	for _, bs := range bgs {
+	opts := make([]huh.Option[string], len(bgs))
+	for i, bs := range bgs {
 		label := fmt.Sprintf("%s · started %s · %s",
 			shortSession(bs.SessionID),
 			bs.StartedAt.Format("Jan 2 15:04"),
 			shortenCwd(bs.Cwd))
-		opts = append(opts, huh.NewOption(label, bs.SessionID))
+		opts[i] = huh.NewOption(label, bs.SessionID)
 	}
-	opts = append(opts, huh.NewOption("(skip — start a fresh instance instead)", ""))
 
-	var selected string
-	err := runField(huh.NewSelect[string]().
-		Title(fmt.Sprintf("%s has %d backgrounded sessions — pick one to resume", profile, len(bgs))).
+	selected := bgs[0].SessionID // pre-select the newest session
+	err := runFieldBack(huh.NewSelect[string]().
+		Title(fmt.Sprintf("%s has %d backgrounded sessions — pick one to resume (Esc to skip)", profile, len(bgs))).
 		Options(opts...).
 		Value(&selected))
-	if err != nil {
-		handleAbort(err)
+	if errors.Is(err, huh.ErrUserAborted) {
 		return nil
 	}
 	if selected == "" {
@@ -569,13 +583,31 @@ func pickEditAction(name string, p *Profile) string {
 		model = "—"
 	}
 	settingsLabel := fmt.Sprintf("Session settings (mode: %s, model: %s)", mode, model)
+	isolatedState := "off"
+	if p.Isolated {
+		isolatedState = "on"
+	}
+	isolatedLabel := fmt.Sprintf("Isolated mode: %s (ignore user/project settings.json)", isolatedState)
 
-	var action string
+	loc, _ := resolveProfileLocation(name)
+	kinds := []string{}
+	if loc != nil {
+		kinds = profilePluginKinds(*loc)
+	}
+	pluginSummary := "none"
+	if len(kinds) > 0 {
+		pluginSummary = strings.Join(kinds, ", ")
+	}
+	pluginLabel := fmt.Sprintf("Profile-bundled commands/skills/agents/hooks (%s)", pluginSummary)
+
+	action := "tools"
 	err := runField(huh.NewSelect[string]().
 		Title("Edit " + name).
 		Options(
 			huh.NewOption(toolsLabel, "tools"),
 			huh.NewOption(settingsLabel, "settings"),
+			huh.NewOption(isolatedLabel, "isolated"),
+			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile.json in $EDITOR", "editor"),
 			huh.NewOption("Done", "done"),
 		).
@@ -586,7 +618,9 @@ func pickEditAction(name string, p *Profile) string {
 
 // manageToolFilters lets the user pick a server, refetch its tools, and re-run
 // the same allow/deny picker used in `claude-profiles new`. A confirm gate
-// protects existing filters from being wiped by a no-op pass.
+// protects existing filters from being wiped by a no-op pass. Esc returns to
+// the edit menu — there's no explicit "Back" option, since one default-
+// selected sentinel item would conflict with the natural first server choice.
 func manageToolFilters(p *Profile, name string) {
 	if len(p.McpServers) == 0 {
 		warn("No MCP servers in this profile — add one via `claude-profiles edit %s` → $EDITOR, or `new` from scratch.", name)
@@ -599,21 +633,19 @@ func manageToolFilters(p *Profile, name string) {
 		}
 		sort.Strings(snames)
 
-		opts := make([]huh.Option[string], 0, len(snames)+1)
-		for _, sname := range snames {
+		opts := make([]huh.Option[string], len(snames))
+		for i, sname := range snames {
 			n := countServerDenied(p, sname)
 			tag := styleInfo.Render(fmt.Sprintf("(%d denied)", n))
-			opts = append(opts, huh.NewOption(fmt.Sprintf("%-24s %s", sname, tag), sname))
+			opts[i] = huh.NewOption(fmt.Sprintf("%-24s %s", sname, tag), sname)
 		}
-		opts = append(opts, huh.NewOption("Back", ""))
 
-		var picked string
-		err := runField(huh.NewSelect[string]().
-			Title("Reconfigure tool filter — pick a server").
+		picked := snames[0] // pre-select the first server so huh highlights it
+		err := runFieldBack(huh.NewSelect[string]().
+			Title("Reconfigure tool filter — pick a server (Esc to go back)").
 			Options(opts...).
 			Value(&picked))
-		handleAbort(err)
-		if picked == "" {
+		if errors.Is(err, huh.ErrUserAborted) {
 			return
 		}
 		reconfigureServerFilter(p, picked)
@@ -650,6 +682,108 @@ func reconfigureServerFilter(p *Profile, sname string) {
 	clearServerDeniedTools(p, sname)
 	info("  %d tool(s) found.", len(tools))
 	selectToolFilter(p, sname, tools)
+}
+
+// manageProfilePlugin offers to scaffold commands/, skills/, agents/, hooks/
+// folders inside the profile dir. The wrapper auto-detects them on next launch
+// and passes the profile folder via --plugin-dir; no further config needed.
+func manageProfilePlugin(name string) {
+	loc, err := resolveProfileLocation(name)
+	if err != nil {
+		fatal(err)
+	}
+	root := filepath.Dir(loc.JSONPath)
+	info("Profile folder: %s", root)
+	info("Existing plugin content: %s", strings.Join(profilePluginKinds(*loc), ", "))
+	info("Claude's --plugin-dir auto-discovers these subdirs:")
+	for _, sub := range pluginSubdirs {
+		exists := ""
+		if _, err := os.Stat(filepath.Join(root, sub)); err == nil {
+			exists = " " + styleSuccess.Render("(present)")
+		}
+		fmt.Fprintf(os.Stderr, "    · %s/%s\n", sub, exists)
+	}
+
+	for {
+		var picked string
+		err := runFieldBack(huh.NewSelect[string]().
+			Title("Scaffold which? (Esc to go back)").
+			Options(
+				huh.NewOption("commands/  — slash commands (.md files)", "commands"),
+				huh.NewOption("skills/    — per-skill folder with SKILL.md", "skills"),
+				huh.NewOption("agents/    — subagent definitions (.md)", "agents"),
+				huh.NewOption("hooks/     — hooks.json", "hooks"),
+				huh.NewOption("Open the profile folder in $EDITOR", "open"),
+			).
+			Value(&picked))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return
+		}
+		switch picked {
+		case "commands", "skills", "agents", "hooks":
+			scaffoldPluginSubdir(root, picked)
+		case "open":
+			editor := os.Getenv("EDITOR")
+			if editor == "" {
+				editor = "vi"
+			}
+			cmd := exec.Command(editor, root)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			_ = cmd.Run()
+		}
+	}
+}
+
+// scaffoldPluginSubdir creates the named plugin folder (commands/, skills/,
+// etc.) inside the profile dir if missing, and seeds a starter file so it's
+// obvious what shape to follow. Idempotent.
+func scaffoldPluginSubdir(root, kind string) {
+	dir := filepath.Join(root, kind)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		warn("could not create %s: %v", dir, err)
+		return
+	}
+	stub := ""
+	stubPath := ""
+	switch kind {
+	case "commands":
+		stubPath = filepath.Join(dir, "hello.md")
+		stub = "---\ndescription: Sample slash command bundled with this profile\nallowed-tools: Bash\n---\nReply: \"hello from " + filepath.Base(root) + "\".\n"
+	case "skills":
+		stubDir := filepath.Join(dir, "hello-skill")
+		_ = os.MkdirAll(stubDir, 0o755)
+		stubPath = filepath.Join(stubDir, "SKILL.md")
+		stub = "---\nname: hello-skill\ndescription: Sample skill bundled with this profile\n---\nWhen invoked, greet the user.\n"
+	case "agents":
+		stubPath = filepath.Join(dir, "reviewer.md")
+		stub = "---\nname: reviewer\ndescription: Sample subagent bundled with this profile\n---\nReview code changes pragmatically. Flag risks, suggest tests.\n"
+	case "hooks":
+		stubPath = filepath.Join(dir, "hooks.json")
+		stub = `{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "echo edited >&2" }
+        ]
+      }
+    ]
+  }
+}
+`
+	}
+	if _, err := os.Stat(stubPath); err == nil {
+		info("%s already exists — leaving it alone.", stubPath)
+		return
+	}
+	if err := os.WriteFile(stubPath, []byte(stub), 0o644); err != nil {
+		warn("could not seed %s: %v", stubPath, err)
+		return
+	}
+	success("Scaffolded %s", stubPath)
 }
 
 func countServerDenied(p *Profile, sname string) int {

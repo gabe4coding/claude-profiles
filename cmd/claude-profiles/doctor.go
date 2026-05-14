@@ -122,15 +122,15 @@ func resolveSymlink(p string) string {
 }
 
 func checkSwitchCommand() docCheck {
-	path := filepath.Join(claudeRootDirPath(), "commands", "switch.md")
+	path := filepath.Join(wrapperPluginPath(), "commands", "handoff.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return docCheck{"/switch slash command", "warn", "not installed yet — first run of any launch will install it"}
+		return docCheck{"/handoff slash command", "warn", "not installed yet — first run of any launch will install it"}
 	}
 	if string(data) != switchSlashCommand {
-		return docCheck{"/switch slash command", "warn", "out of date; will be rewritten on next launch"}
+		return docCheck{"/handoff slash command", "warn", "out of date; will be rewritten on next launch"}
 	}
-	return docCheck{"/switch slash command", "ok", path}
+	return docCheck{"/handoff slash command", "ok", path}
 }
 
 func checkProfilesDir() docCheck {

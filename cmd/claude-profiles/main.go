@@ -42,6 +42,10 @@ func main() {
 		cmdRun(args[1:])
 	case "_hook-session-start":
 		cmdHookSessionStart()
+	case "_hook-prompt-submit":
+		cmdHookPromptSubmit()
+	case "_delegate-runner":
+		cmdDelegateRunner(args[1:])
 	case "doctor":
 		cmdDoctor()
 	case "probe":
@@ -72,6 +76,14 @@ func main() {
 // actions are dispatched via single-key shortcuts (see hub.go).
 
 func cmdInteractive() {
+	// Bootstrap tmux around the whole hub so /delegate has somewhere to drop
+	// windows, and so closing claude from a launched profile returns control
+	// to the hub (cmdRun's own bootstrap is a no-op once $TMUX is set, which
+	// means it stays in-process and the hub redraws when the wrapper loop
+	// returns). Without this, cmdRun's syscall.Exec into tmux destroys the
+	// hub process and there's nothing left to return to.
+	bootstrapTmuxIfNeeded("claude-profiles", nil)
+
 	hubMode = true
 	defer func() { hubMode = false }()
 
@@ -178,6 +190,12 @@ func cmdList() {
 			servers = strings.Join(snames, ", ")
 			if len(p.DeniedTools) > 0 {
 				tags = append(tags, fmt.Sprintf("deny:%d", len(p.DeniedTools)))
+			}
+			if p.Isolated {
+				tags = append(tags, "isolated")
+			}
+			if kinds := profilePluginKinds(loc); len(kinds) > 0 {
+				tags = append(tags, "+"+strings.Join(kinds, "/"))
 			}
 			// Surface the most useful settings inline so users don't need to open the file
 			s := parseSettings(p.Settings)
@@ -370,6 +388,18 @@ func runEditMenu(name string) {
 			if err := saveProfile(name, p); err != nil {
 				fatal(err)
 			}
+		case "isolated":
+			p.Isolated = !p.Isolated
+			if err := saveProfile(name, p); err != nil {
+				fatal(err)
+			}
+			state := "off"
+			if p.Isolated {
+				state = "on"
+			}
+			info("Isolated mode is now %s.", state)
+		case "plugin":
+			manageProfilePlugin(name)
 		case "editor":
 			openProfileInEditor(name)
 		case "done", "":

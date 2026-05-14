@@ -54,6 +54,10 @@ func migrateLegacyLayout() {
 	}
 
 	migrateProfiles(filepath.Join(home, ".claude", "mcp-profiles"), profilesDirPath())
+
+	// Rename the wrapper-owned plugin from its earlier "wrapper-plugin" name to
+	// "claude-profiles" so the slash command's namespace matches the CLI name.
+	moveIfPresent(filepath.Join(root, "wrapper-plugin"), wrapperPluginPath())
 }
 
 // moveIfPresent moves src→dst only if src exists and dst does not (so a

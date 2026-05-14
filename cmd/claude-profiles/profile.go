@@ -22,10 +22,16 @@ type Profile struct {
 	Description string                  `json:"_description,omitempty"`
 	McpServers  map[string]ServerConfig `json:"mcpServers"`
 	DeniedTools []string                `json:"_deniedTools,omitempty"`
-	// Settings is the Claude Code settings for this profile. Written as a
-	// sibling settings.json in folder format; only used inline for flat
-	// profiles that have no other reason to use folder format.
+	// Settings is the Claude Code settings for this profile. Inlined into
+	// profile.json as `_settings`.
 	Settings json.RawMessage `json:"_settings,omitempty"`
+	// Isolated (when true) tells the wrapper to pass `--setting-sources=` so
+	// claude loads NO user/project/local settings.json — only the profile's
+	// inline _settings (plus our SessionStart hook) are in effect. Plugins,
+	// slash commands, agents, and CLAUDE.md from the host are NOT affected by
+	// this flag — those require --bare, which would break /switch. Default
+	// is false (profile blends with the user's root configuration as before).
+	Isolated bool `json:"_isolated,omitempty"`
 }
 
 // ── Settings (JSON map) helpers ──────────────────────────────────────────────
@@ -162,6 +168,37 @@ func profileExists(name string) bool {
 	return err == nil
 }
 
+// pluginSubdirs lists the folder names claude's --plugin-dir auto-discovers.
+// If any of these live inside the profile folder, we load the profile folder
+// as a plugin via --plugin-dir at launch.
+var pluginSubdirs = []string{"commands", "skills", "agents", "hooks"}
+
+// pluginDirFor returns the absolute folder path to pass to `--plugin-dir`
+// for this profile, or "" if the profile bundles no plugin content. The
+// folder is profilePath(name)'s parent directory (i.e. the profile root).
+func pluginDirFor(loc ProfileLocation) string {
+	root := filepath.Dir(loc.JSONPath)
+	for _, sub := range pluginSubdirs {
+		if info, err := os.Stat(filepath.Join(root, sub)); err == nil && info.IsDir() {
+			return root
+		}
+	}
+	return ""
+}
+
+// profilePluginKinds returns the subset of plugin-content kinds the profile
+// folder actually has on disk. Used for status/tagging in list + hub views.
+func profilePluginKinds(loc ProfileLocation) []string {
+	root := filepath.Dir(loc.JSONPath)
+	out := make([]string, 0, len(pluginSubdirs))
+	for _, sub := range pluginSubdirs {
+		if info, err := os.Stat(filepath.Join(root, sub)); err == nil && info.IsDir() {
+			out = append(out, sub)
+		}
+	}
+	return out
+}
+
 // loadProfileAt reads a unified profile JSON from any absolute path. The
 // caller is responsible for pointing at a profile.json (we don't auto-glob).
 func loadProfileAt(path string) (*Profile, error) {
@@ -183,6 +220,11 @@ func loadProfileAt(path string) (*Profile, error) {
 //   - --disallowedTools  from DeniedTools
 //   - --settings         augmented JSON written by SessionStart hook, or
 //                        inline Settings JSON straight from the profile.
+//   - --setting-sources= when Isolated, so claude loads NO user/project/local
+//                        settings — only the explicit --settings file applies.
+//                        (Plugins, slash commands, agents, and CLAUDE.md are
+//                        unaffected; --bare would be needed to strip those
+//                        too, but it disables hooks and would break /switch.)
 //
 // model and permission mode live inside Settings now, so no separate flags.
 func claudeFlags(p *Profile, settingsPath string) []string {
@@ -195,6 +237,9 @@ func claudeFlags(p *Profile, settingsPath string) []string {
 		args = append(args, "--settings", settingsPath)
 	case len(p.Settings) > 0:
 		args = append(args, "--settings", string(p.Settings))
+	}
+	if p.Isolated {
+		args = append(args, "--setting-sources=")
 	}
 	return args
 }

@@ -25,23 +25,61 @@ import (
 // to type /exit themselves.
 
 const switchSlashCommand = `---
-description: Switch the active claude-profiles profile. Pass a profile id directly, or describe an intent in plain English and the agent will pick the best-fit profile from the list.
-argument-hint: <profile-id | intent>
-allowed-tools: Bash
+description: Hand off to another claude-profiles profile. Pass a profile id or describe an intent in plain English; the agent will pick the best-fit profile and ask whether to start with fresh context or resume this conversation.
+argument-hint: [profile-id | intent] [--fresh | --keep]
+allowed-tools: AskUserQuestion, Bash
 ---
-The user typed ` + "`/switch $ARGUMENTS`" + `.
+The user typed ` + "`/handoff $ARGUMENTS`" + `.
 
-Decide the target profile id:
-  - empty $ARGUMENTS → target is the empty string (wrapper will open its picker)
+# Step 1 — pick the target profile id
+
+  - empty $ARGUMENTS (or only mode flags --fresh/--keep) → target is the empty string (wrapper will open its picker)
   - $ARGUMENTS exactly matches an "Available profiles" id in your session context → that's the target
   - free-form intent (e.g. "now I need to analyze revenue loss") → classify against the profile list and pick the closest fit
-  - if no profile list is in your context, /switch was invoked outside the claude-profiles run wrapper — TELL THE USER and do not run any command
+  - if no profile list is in your context, /handoff was invoked outside the claude-profiles run wrapper — TELL THE USER and do not run any command
 
-Then use Bash to run EXACTLY this one-liner (substitute the chosen profile id into <TARGET>; can be empty). The env guard at the front refuses to kill the session if /switch is invoked outside the wrapper:
+# Step 2 — decide context mode
 
-if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude-profiles" && printf "%s" "<TARGET>" > "$HOME/.claude-profiles/next-marker" && kill $PPID
+  - args contain ` + "`--fresh`" + ` → mode=fresh
+  - args contain ` + "`--keep`" + ` → mode=keep
+  - otherwise → use the AskUserQuestion tool to ask the user:
 
-Briefly tell the user which profile is queued (or that the picker will open).
+      Question: "Hand off to <target>. Start with fresh context or resume this conversation?"
+      Header:   "Context"
+      Options:
+        - label: "Fresh context",      description: "Start a new session. I'll write a brief so the next agent picks up without friction."
+        - label: "Resume conversation", description: "Continue this exact conversation under the new profile."
+
+    Map the answer: "Fresh context" → mode=fresh, "Resume conversation" → mode=keep.
+
+# Step 3 — if mode=fresh, build a handoff brief
+
+Write a tight handoff brief covering, in 5–10 bullets:
+
+  - What was being worked on (one line)
+  - Key decisions or findings reached so far
+  - Open questions / next actions
+  - Files, links, tickets, identifiers the next session will need
+  - Anything the next agent should NOT re-do
+
+No preamble. No filler. Make every bullet load-bearing. Keep it under ~250 words.
+
+# Step 4 — write the marker and exit
+
+Use the Bash tool to run EXACTLY this script (substitute <TARGET>, <MODE>, and <BRIEF>; <BRIEF> is the empty string for mode=keep). The env guard refuses to kill the session if /handoff is invoked outside the wrapper:
+
+if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/handoff only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi
+mkdir -p "$HOME/.claude-profiles"
+cat > "$HOME/.claude-profiles/next-marker" <<'HANDOFF_MARKER_EOF'
+{"profile": "<TARGET>", "mode": "<MODE>", "brief": "<BRIEF>"}
+HANDOFF_MARKER_EOF
+kill $PPID
+
+Use a single-quoted heredoc so the brief survives shell interpolation; escape ` + "`\"`" + ` inside <BRIEF> as ` + "`\\\"`" + ` and replace literal newlines with the two characters ` + "`\\n`" + `.
+
+# Step 5 — acknowledge
+
+Briefly tell the user: which profile is queued, whether mode is fresh or keep, and (for fresh) that you wrote a handoff brief.
 `
 
 func cmdRun(args []string) {
@@ -49,6 +87,14 @@ func cmdRun(args []string) {
 	// have meaning while a single wrapper loop is alive — finding one at
 	// startup means a previous run died without consuming it.
 	cleanStaleMarker()
+
+	// If we're not already inside tmux, transparently re-exec ourselves
+	// under `tmux new-session` so /delegate has a place to drop its windows.
+	// Opt out with CLAUDE_PROFILES_NO_TMUX=1 (for users without tmux or who
+	// want plain-terminal behaviour). This call replaces the process when it
+	// fires; on the user's POV `claude-profiles run …` always lands inside
+	// tmux on the first invocation.
+	bootstrapTmuxIfNeeded(tmuxSessionName(args), append([]string{"run"}, args...))
 
 	// Pre-extract --resume <id> so a caller (hub bg attach, or CLI) can ask
 	// the wrapper to enter the loop with an existing session id ready to
@@ -136,6 +182,16 @@ func cmdRun(args []string) {
 
 		claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", loc.JSONPath}
 		claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
+		// Always load the wrapper-plugin so /switch survives --setting-sources=
+		// in isolated mode. The plugin is a tiny dir containing commands/
+		// switch.md — claude's --plugin-dir auto-discovery loads it without
+		// touching user/project settings.
+		claudeArgs = append(claudeArgs, "--plugin-dir", wrapperPluginPath())
+		// If the profile folder bundles commands/skills/agents/hooks, load it
+		// too. Multiple --plugin-dir flags stack; both plugins coexist.
+		if dir := pluginDirFor(*loc); dir != "" {
+			claudeArgs = append(claudeArgs, "--plugin-dir", dir)
+		}
 		// Surface the profile name in the prompt box, terminal title, and
 		// /resume picker so the user always knows which profile is active.
 		claudeArgs = append(claudeArgs, "--name", loc.QualifiedID)
@@ -193,10 +249,15 @@ func cmdRun(args []string) {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		// Marker env var so the /switch slash command can refuse to kill claude
-		// when invoked outside our wrapper (plain claude sessions inherit the
-		// command file from ~/.claude/commands/ but not this env var).
-		cmd.Env = append(os.Environ(), "CLAUDE_PROFILES_RUN=1")
+		// Marker env vars: CLAUDE_PROFILES_RUN guards /handoff and /delegate
+		// from firing outside the wrapper; CLAUDE_PROFILES_WRAPPER_PID lets
+		// slash commands locate the wrapper's pidfile (which carries the live
+		// session id) without walking the process tree — $PPID inside the
+		// slash command's Bash is claude itself, two hops below the wrapper.
+		cmd.Env = append(os.Environ(),
+			"CLAUDE_PROFILES_RUN=1",
+			fmt.Sprintf("CLAUDE_PROFILES_WRAPPER_PID=%d", os.Getpid()),
+		)
 
 		// Poll the project sessions dir while claude is running so the hub's
 		// "attach" prompt can offer a session id even during the first
@@ -209,12 +270,12 @@ func cmdRun(args []string) {
 		_ = cmd.Run() // claude's exit code isn't meaningful for our purpose
 		close(pollDone)
 
-		raw, hasMarker := consumeNextProfileMarker()
+		marker, hasMarker := consumeNextProfileMarker()
 		if !hasMarker {
-			return // user /exit'd or claude crashed without a queued switch
+			return // user /exit'd or claude crashed without a queued handoff
 		}
 
-		next := raw
+		next := marker.Profile
 		if next == "" {
 			fmt.Fprintln(os.Stderr)
 			info("Pick the next profile (Esc to keep current):")
@@ -232,9 +293,26 @@ func cmdRun(args []string) {
 			return
 		}
 
-		after := snapshotSessionFiles()
-		if id := findNewOrUpdatedSession(before, after); id != "" {
-			resumeID = id
+		// Mode dispatch: "fresh" → discard the resumeID and queue the handoff
+		// brief as the next launch's initial user message. Default ("keep" or
+		// legacy plain-text marker) → set resumeID to the just-finished
+		// session and let the auto-continue prompt fire on the next iteration.
+		switch marker.Mode {
+		case "fresh":
+			resumeID = ""
+			skipAutoContinue = true // no "continue from where you left off" — the brief replaces it
+			body := marker.Brief
+			if body == "" {
+				body = fmt.Sprintf("[claude-profiles] Profile switched to %s. The previous session declined to write a handoff brief; pick up from a clean slate.", next)
+			} else {
+				body = fmt.Sprintf("[claude-profiles handoff from previous profile]\n\n%s", body)
+			}
+			passThrough = []string{body}
+		default: // "keep" or unset (legacy plain-text marker)
+			after := snapshotSessionFiles()
+			if id := findNewOrUpdatedSession(before, after); id != "" {
+				resumeID = id
+			}
 		}
 		profile = next
 		fmt.Fprintln(os.Stderr)
@@ -317,34 +395,87 @@ func cleanStaleMarker() {
 	_ = os.Remove(p)
 }
 
-// consumeNextProfileMarker reads and removes the /switch handoff marker.
-// Returns (raw, exists). "exists" is true when the marker file was present —
-// even if its content was empty (empty == "open the picker"). When false the
-// loop exits.
-func consumeNextProfileMarker() (string, bool) {
+// HandoffMarker is the JSON payload the /handoff slash command writes into
+// ~/.claude-profiles/next-marker. The wrapper reads it after the child
+// claude process exits and uses it to decide how to relaunch.
+type HandoffMarker struct {
+	Profile string `json:"profile"`         // target profile id; empty → open picker
+	Mode    string `json:"mode,omitempty"`  // "keep" (default) or "fresh"
+	Brief   string `json:"brief,omitempty"` // handoff text for mode=fresh
+}
+
+// consumeNextProfileMarker reads and removes the /handoff marker. The second
+// return value is true when the file was present (even if empty content).
+// Accepts both the new JSON format and the legacy plain-text format (just a
+// profile id) for backward compatibility.
+func consumeNextProfileMarker() (HandoffMarker, bool) {
 	p := nextMarkerPath()
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return "", false
+		return HandoffMarker{}, false
 	}
 	_ = os.Remove(p)
-	return strings.TrimSpace(string(data)), true
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return HandoffMarker{}, true
+	}
+	if strings.HasPrefix(raw, "{") {
+		var m HandoffMarker
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			return m, true
+		}
+		// Fall through to plain-text interpretation if JSON parse failed.
+	}
+	return HandoffMarker{Profile: raw}, true
 }
 
-// ensureSwitchSlashCommand installs ~/.claude/commands/switch.md and keeps it
-// up to date. The commands directory belongs to Claude Code (not us), so we
-// don't move it into ~/.claude-profiles/. We rewrite only when the file
-// content has actually changed.
+// ensureSwitchSlashCommand installs handoff.md into the wrapper-plugin dir at
+// ~/.claude-profiles/claude-profiles/commands/handoff.md. The wrapper passes
+// --plugin-dir <wrapper-plugin> on every launch, so /handoff is available
+// regardless of isolated mode (which strips user/project settings.json and
+// — empirically — the slash commands they normally pull in).
+//
+// Idempotent — only rewrites when the embedded text drifts. Also cleans up
+// the old switch.md / ~/.claude/commands/switch.md leftovers so /help only
+// shows one entry.
 func ensureSwitchSlashCommand() error {
-	dir := filepath.Join(claudeRootDirPath(), "commands")
+	dir := filepath.Join(wrapperPluginPath(), "commands")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, "switch.md")
-	if cur, err := os.ReadFile(path); err == nil && string(cur) == switchSlashCommand {
-		return nil
+	for _, sc := range []struct{ name, body string }{
+		{"handoff.md", switchSlashCommand},
+		{"delegate.md", delegateSlashCommand},
+	} {
+		path := filepath.Join(dir, sc.name)
+		if cur, err := os.ReadFile(path); err != nil || string(cur) != sc.body {
+			if err := os.WriteFile(path, []byte(sc.body), 0o644); err != nil {
+				return err
+			}
+		}
 	}
-	return os.WriteFile(path, []byte(switchSlashCommand), 0o644)
+	// Bundled helper scripts the slash commands invoke via ${CLAUDE_PLUGIN_ROOT}.
+	// Keeps the slash-command bodies short and the orchestration logic auditable
+	// (and unit-testable) as plain bash. chmod 0o755 so they're executable.
+	scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		return err
+	}
+	for _, s := range []struct{ name, body string }{
+		{"delegate-launch.sh", delegateLaunchScript},
+		{"delegate-watch.sh", delegateWatchScript},
+	} {
+		path := filepath.Join(scriptDir, s.name)
+		if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
+			if err := os.WriteFile(path, []byte(s.body), 0o755); err != nil {
+				return err
+			}
+		}
+	}
+	// One-shot cleanup of stale slash-command files from earlier versions.
+	_ = os.Remove(filepath.Join(claudeRootDirPath(), "commands", "switch.md"))
+	_ = os.Remove(filepath.Join(dir, "switch.md"))
+	return nil
 }
 
 // pollForSessionID watches the project sessions dir for the new .jsonl that
@@ -383,6 +514,85 @@ func shortSession(id string) string {
 	return id
 }
 
+// bootstrapTmuxIfNeeded re-execs the current process under `tmux new-session`
+// when stdin is a TTY and we're not already inside tmux. Refuses (silently
+// returns to normal flow) when:
+//   - we're already in tmux ($TMUX set)
+//   - the user opted out (CLAUDE_PROFILES_NO_TMUX set)
+//   - stdin isn't a TTY (e.g. piped invocation)
+//   - the tmux binary isn't on PATH (a warning is printed)
+//
+// On success this never returns — syscall.Exec replaces the process. Inside
+// the new tmux session, $TMUX is set, so the inner re-invocation hits this
+// same function and falls through to the normal flow. innerArgs is the
+// argv (excluding the binary itself) the inner instance should be launched
+// with — pass `nil` for the bare interactive hub.
+func bootstrapTmuxIfNeeded(sessionName string, innerArgs []string) {
+	if os.Getenv("TMUX") != "" {
+		return
+	}
+	if os.Getenv("CLAUDE_PROFILES_NO_TMUX") != "" {
+		return
+	}
+	if !isTTY() {
+		return
+	}
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		warn("tmux not on PATH — /delegate will refuse until you install tmux or run inside one. Set CLAUDE_PROFILES_NO_TMUX=1 to silence this.")
+		return
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		warn("cannot locate own binary; skipping tmux bootstrap.")
+		return
+	}
+
+	innerParts := []string{shellQuote(self)}
+	for _, a := range innerArgs {
+		innerParts = append(innerParts, shellQuote(a))
+	}
+	inner := strings.Join(innerParts, " ")
+
+	// Name the session per profile so re-running `claude-profiles run X`
+	// attaches to an existing X session instead of spinning up a parallel
+	// one. -A: attach if the named session exists, create otherwise.
+	tmuxArgs := []string{"tmux", "new-session", "-A", "-s", sessionName, inner}
+	if err := syscall.Exec(tmuxBin, tmuxArgs, os.Environ()); err != nil {
+		warn("tmux bootstrap failed (%v); continuing without tmux.", err)
+	}
+}
+
+// tmuxSessionName picks a deterministic session name from the first positional
+// arg (the profile id). Slashes (repo profiles like "alias/name") become
+// dashes — tmux session names disallow "/" and "." in some versions, and ":"
+// is reserved as a separator. Defaults to "claude-profiles" when no profile
+// was passed (e.g. `claude-profiles run` with no args, picker mode).
+func tmuxSessionName(args []string) string {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		safe := a
+		for _, ch := range []string{"/", ".", ":"} {
+			safe = strings.ReplaceAll(safe, ch, "-")
+		}
+		if safe != "" {
+			return "cp-" + safe
+		}
+	}
+	return "claude-profiles"
+}
+
+// shellQuote single-quotes s for safe interpolation into a tmux shell-command
+// argument. Embedded single quotes are escaped via the standard POSIX dance.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
 // ── SessionStart hook ────────────────────────────────────────────────────────
 //
 // Claude Code's SessionStart hook can inject text into a fresh session's
@@ -391,18 +601,32 @@ func shortSession(id string) string {
 // and the agent can classify) and on the exact bash command to write the
 // marker file when the user requests a switch.
 
-const sessionStartHookHeader = `# claude-profiles: in-session profile switching
+const sessionStartHookHeader = `# claude-profiles: in-session profile handoff
 
-You are running inside the ` + "`claude-profiles run`" + ` wrapper. The user can switch profiles mid-session via the ` + "`/switch`" + ` slash command. When they do, write the chosen profile id to ~/.claude-profiles/next-marker and end this session; the wrapper will relaunch claude with that profile and resume the conversation.
+You are running inside the ` + "`claude-profiles run`" + ` wrapper. The user can hand off mid-session via the ` + "`/handoff`" + ` slash command. When they do, you write a JSON marker to ~/.claude-profiles/next-marker and end this session; the wrapper will relaunch claude under the chosen profile, either resuming the conversation or starting fresh with a brief.
 
-Protocol when ` + "`/switch <argument>`" + ` is invoked:
-1. If <argument> is empty, write an empty marker and exit — the wrapper will show its picker.
-2. If <argument> exactly matches one of the profile ids listed below, write that id.
-3. Otherwise treat <argument> as free-form intent and pick the profile from the list whose description best matches. If two are roughly tied or none is a clear fit, ask the user ONE short clarifying question before deciding.
-4. To execute, use the Bash tool to run EXACTLY (the env guard refuses to kill the session if /switch is invoked outside the wrapper):
-   if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/switch only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi; mkdir -p "$HOME/.claude-profiles" && printf "%s" "<chosen-profile-id>" > "$HOME/.claude-profiles/next-marker" && kill $PPID
+Marker shape (JSON):
+  {"profile": "<id>", "mode": "keep"|"fresh", "brief": "<text or empty>"}
 
-Acknowledge the switch briefly to the user (which profile and why) before running the command.
+Protocol when ` + "`/handoff <argument>`" + ` is invoked:
+1. Pick the target profile id from <argument>:
+   - empty → empty target (wrapper opens its picker)
+   - exact match to an Available-profiles id → that id
+   - free-form intent → classify against the list, pick the closest fit
+2. Decide the mode:
+   - args contain ` + "`--fresh`" + ` → mode=fresh
+   - args contain ` + "`--keep`" + ` → mode=keep
+   - otherwise → use the AskUserQuestion tool to ask the user whether to start fresh or resume this conversation. Map "Fresh context" → fresh, "Resume conversation" → keep.
+3. If mode=fresh, write a tight handoff brief (5–10 bullets, <250 words) covering what was being worked on, key decisions, open questions, and references the next session will need. Escape ` + "`\"`" + ` as ` + "`\\\"`" + ` and newlines as ` + "`\\n`" + ` so the JSON survives.
+4. Use the Bash tool to write the marker and kill the session (the env guard refuses to kill if /handoff is invoked outside the wrapper):
+   if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/handoff only works inside 'claude-profiles run' wrapper" >&2; exit 1; fi
+   mkdir -p "$HOME/.claude-profiles"
+   cat > "$HOME/.claude-profiles/next-marker" <<'HANDOFF_MARKER_EOF'
+   {"profile": "<TARGET>", "mode": "<MODE>", "brief": "<BRIEF>"}
+   HANDOFF_MARKER_EOF
+   kill $PPID
+
+Acknowledge the handoff briefly to the user (target, mode) before running the Bash command.
 
 Available profiles:
 `
@@ -453,16 +677,22 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 
 	// Resolve "claude-profiles" via PATH at hook-fire time rather than baking
 	// in an absolute path — keeps the hook working across reinstalls / moves.
-	hookCmd := "claude-profiles _hook-session-start"
-
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	existingRaw, _ := hooks["SessionStart"].([]any)
-	hooks["SessionStart"] = append(existingRaw, map[string]any{
+	existingSS, _ := hooks["SessionStart"].([]any)
+	hooks["SessionStart"] = append(existingSS, map[string]any{
 		"hooks": []map[string]any{
-			{"type": "command", "command": hookCmd},
+			{"type": "command", "command": "claude-profiles _hook-session-start"},
+		},
+	})
+	// UserPromptSubmit fires on every user turn — we use it to drain pending
+	// /delegate results back into the parent session as additionalContext.
+	existingUP, _ := hooks["UserPromptSubmit"].([]any)
+	hooks["UserPromptSubmit"] = append(existingUP, map[string]any{
+		"hooks": []map[string]any{
+			{"type": "command", "command": "claude-profiles _hook-prompt-submit"},
 		},
 	})
 	settings["hooks"] = hooks

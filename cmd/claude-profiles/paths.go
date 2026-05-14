@@ -47,6 +47,11 @@ func reposCacheDirPath() string{ return filepath.Join(profilesRoot(), "repos") }
 func reposConfigPathFn() string{ return filepath.Join(profilesRoot(), "repos.json") }
 func runDirPath() string       { return filepath.Join(profilesRoot(), "run") }
 func runSettingsPath() string  { return filepath.Join(profilesRoot(), "run-settings.json") }
+// wrapperPluginPath is the on-disk path of the wrapper-owned plugin dir.
+// Folder name is "claude-profiles" so that the slash command shows up as
+// `/switch` (or namespaced `/claude-profiles:switch` if the user prefers).
+func wrapperPluginPath() string { return filepath.Join(profilesRoot(), "claude-profiles") }
+func delegatesDir() string      { return filepath.Join(profilesRoot(), "delegates") }
 func sessionsLedgerPath() string { return filepath.Join(profilesRoot(), "sessions.json") }
 func recentPath() string       { return filepath.Join(profilesRoot(), "recent.json") }
 func asksPath() string         { return filepath.Join(profilesRoot(), "asks.json") }

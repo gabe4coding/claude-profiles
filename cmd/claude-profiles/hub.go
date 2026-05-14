@@ -424,6 +424,12 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		if len(p.DeniedTools) > 0 {
 			tags = append(tags, fmt.Sprintf("deny:%d", len(p.DeniedTools)))
 		}
+		if p.Isolated {
+			tags = append(tags, "isolated")
+		}
+		if kinds := profilePluginKinds(loc); len(kinds) > 0 {
+			tags = append(tags, "+"+strings.Join(kinds, "/"))
+		}
 		s := parseSettings(p.Settings)
 		if m := getModel(s); m != "" {
 			tags = append(tags, "model:"+m)
