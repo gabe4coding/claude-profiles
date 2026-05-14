@@ -14,9 +14,41 @@ import (
 	"golang.org/x/term"
 )
 
+// claudeTheme paints huh forms with the Claude design system palette.
+func claudeTheme() *huh.Theme {
+	t := huh.ThemeBase()
+	// Titles + descriptions
+	t.Focused.Title = t.Focused.Title.Foreground(cdsCoral).Bold(true)
+	t.Focused.Description = t.Focused.Description.Foreground(cdsMuted)
+	t.Blurred.Title = t.Blurred.Title.Foreground(cdsMuted)
+	t.Blurred.Description = t.Blurred.Description.Foreground(cdsMuted)
+	// Selected option indicator + text
+	t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(cdsCoral)
+	t.Focused.SelectedOption = t.Focused.SelectedOption.Foreground(cdsCoral).Bold(true)
+	t.Focused.MultiSelectSelector = t.Focused.MultiSelectSelector.Foreground(cdsCoral)
+	t.Focused.SelectedPrefix = t.Focused.SelectedPrefix.Foreground(cdsCoral)
+	// Text input
+	t.Focused.TextInput.Cursor = t.Focused.TextInput.Cursor.Foreground(cdsCoral)
+	t.Focused.TextInput.Prompt = t.Focused.TextInput.Prompt.Foreground(cdsCoral)
+	t.Focused.TextInput.Placeholder = t.Focused.TextInput.Placeholder.Foreground(cdsMuted)
+	// Confirm buttons
+	t.Focused.FocusedButton = t.Focused.FocusedButton.
+		Foreground(cdsCream).
+		Background(cdsCoral).
+		Bold(true)
+	t.Focused.BlurredButton = t.Focused.BlurredButton.Foreground(cdsMuted)
+	// Help footer
+	t.Help.ShortKey = t.Help.ShortKey.Foreground(cdsCoral).Bold(true)
+	t.Help.ShortDesc = t.Help.ShortDesc.Foreground(cdsMuted)
+	t.Help.FullKey = t.Help.FullKey.Foreground(cdsCoral).Bold(true)
+	t.Help.FullDesc = t.Help.FullDesc.Foreground(cdsMuted)
+	return t
+}
+
 // runField wraps a huh Field in a Form configured with our preferred bindings:
 //   - Esc and Ctrl+C both abort (return huh.ErrUserAborted)
 //   - help footer visible (↑↓ navigate, enter select, esc back …)
+//   - Claude design-system palette applied to the field's theme
 func runField(field huh.Field) error {
 	km := huh.NewDefaultKeyMap()
 	km.Quit = key.NewBinding(
@@ -26,17 +58,20 @@ func runField(field huh.Field) error {
 	return huh.NewForm(huh.NewGroup(field)).
 		WithShowHelp(true).
 		WithKeyMap(km).
+		WithTheme(claudeTheme()).
 		Run()
 }
 
 // ── Styling ───────────────────────────────────────────────────────────────────
+//
+// Built on the Claude design system palette in colors.go.
 
 var (
-	styleTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	styleSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	styleInfo    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleReadOnly = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	styleWarn    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	styleTitle    = lipgloss.NewStyle().Bold(true).Foreground(cdsCoral)
+	styleSuccess  = lipgloss.NewStyle().Foreground(cdsSage)
+	styleInfo     = lipgloss.NewStyle().Foreground(cdsMuted)
+	styleReadOnly = lipgloss.NewStyle().Foreground(cdsSage)
+	styleWarn     = lipgloss.NewStyle().Foreground(cdsAmber)
 )
 
 func info(format string, a ...any) {
@@ -144,33 +179,6 @@ func confirm(msg string) bool {
 
 // ── Top-level action picker (hub mode) ────────────────────────────────────────
 
-func pickAction() string {
-	if !isTTY() {
-		// No interactive hub in non-TTY mode — default to launch
-		return "launch"
-	}
-	var action string
-	opts := []huh.Option[string]{
-		huh.NewOption("Launch a profile", "launch"),
-		huh.NewOption("New — create a profile", "new"),
-		huh.NewOption("Edit a profile", "edit"),
-		huh.NewOption("Delete a profile", "delete"),
-		huh.NewOption("Export a profile", "export"),
-		huh.NewOption("Import a profile from file", "import"),
-		huh.NewOption("Quit", "quit"),
-	}
-	err := runField(huh.NewSelect[string]().
-		Title("claude-profiles").
-		Description("What do you want to do?").
-		Options(opts...).
-		Value(&action))
-	if err != nil {
-		// Any error (including Ctrl+C / Esc) exits the hub cleanly.
-		return "quit"
-	}
-	return action
-}
-
 // ── Profile picker ────────────────────────────────────────────────────────────
 
 func pickProfile() (string, error) {
@@ -211,6 +219,51 @@ func pickProfile() (string, error) {
 		return "", err
 	}
 	return selected, nil
+}
+
+// pickBackgroundedSession shows a huh select with all backgrounded sessions
+// for the profile so the user can pick exactly which one to wrapper-resume.
+// Returns nil if the user cancelled or chose "skip".
+func pickBackgroundedSession(profile string, bgs []BackgroundedSession) *BackgroundedSession {
+	if !isTTY() || len(bgs) == 0 {
+		return nil
+	}
+	opts := make([]huh.Option[string], 0, len(bgs)+1)
+	for _, bs := range bgs {
+		label := fmt.Sprintf("%s · started %s · %s",
+			shortSession(bs.SessionID),
+			bs.StartedAt.Format("Jan 2 15:04"),
+			shortenCwd(bs.Cwd))
+		opts = append(opts, huh.NewOption(label, bs.SessionID))
+	}
+	opts = append(opts, huh.NewOption("(skip — start a fresh instance instead)", ""))
+
+	var selected string
+	err := runField(huh.NewSelect[string]().
+		Title(fmt.Sprintf("%s has %d backgrounded sessions — pick one to resume", profile, len(bgs))).
+		Options(opts...).
+		Value(&selected))
+	if err != nil {
+		handleAbort(err)
+		return nil
+	}
+	if selected == "" {
+		return nil
+	}
+	for i := range bgs {
+		if bgs[i].SessionID == selected {
+			return &bgs[i]
+		}
+	}
+	return nil
+}
+
+func shortenCwd(cwd string) string {
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(cwd, home) {
+		return "~" + cwd[len(home):]
+	}
+	return cwd
 }
 
 func locationLabel(loc ProfileLocation) string {
@@ -264,8 +317,10 @@ func configureSettings(p *Profile) {
 	if !confirm("Configure session settings (permission mode, model)?") {
 		return
 	}
-	p.PermissionMode = pickPermissionMode(p.PermissionMode)
-	p.Model = pickModel(p.Model)
+	s := parseSettings(p.Settings)
+	setPermissionMode(s, pickPermissionMode(getPermissionMode(s)))
+	setModel(s, pickModel(getModel(s)))
+	p.Settings = marshalSettings(s)
 }
 
 func pickPermissionMode(current string) string {

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -26,11 +25,21 @@ func main() {
 	}
 	switch args[0] {
 	case "launch":
-		cmdLaunch(args[1:])
+		cmdRun(args[1:])
 	case "list", "ls":
 		cmdList()
 	case "new", "create":
 		cmdNew()
+	case "generate", "gen":
+		cmdGenerate(strings.Join(args[1:], " "))
+	case "ask":
+		cmdAsk(strings.Join(args[1:], " "))
+	case "run":
+		cmdRun(args[1:])
+	case "_hook-session-start":
+		cmdHookSessionStart()
+	case "doctor":
+		cmdDoctor()
 	case "edit":
 		cmdEdit(args[1:])
 	case "delete", "rm":
@@ -47,101 +56,95 @@ func main() {
 		usage()
 	default:
 		// Treat as profile name shorthand (supports "alias/name" too)
-		cmdLaunch(args)
+		cmdRun(args)
 	}
 }
 
 // ── interactive hub ───────────────────────────────────────────────────────────
+//
+// The hub displays the profile list as the primary view. Highlighted-profile
+// actions are dispatched via single-key shortcuts (see hub.go).
 
 func cmdInteractive() {
 	hubMode = true
 	defer func() { hubMode = false }()
 
 	for {
-		action := pickAction()
-		if action == "quit" || action == "" {
+		r := runHub()
+		if r.action == actQuit || r.action == "" {
 			return
 		}
-		runHubAction(action)
+		runHubAction(r)
 	}
 }
 
-// runHubAction dispatches a hub action and recovers from errHubBack (Esc/Ctrl+C
-// inside a sub-flow), allowing the loop to redisplay the menu.
-func runHubAction(action string) {
+func runHubAction(r hubResult) {
 	defer func() {
-		r := recover()
-		if r == nil {
+		rec := recover()
+		if rec == nil {
 			return
 		}
-		if r != errHubBack {
-			panic(r) // not a hub-back; re-raise
+		if rec != errHubBack {
+			panic(rec)
 		}
 	}()
-	switch action {
-	case "launch":
-		cmdLaunch(nil) // syscall.Exec on success — does not return
-	case "new":
-		cmdNew()
-	case "edit":
-		cmdEdit(nil)
-	case "delete":
-		cmdDelete(nil)
-	case "export":
-		cmdExport(nil)
-	case "import":
-		cmdImport(nil)
-	}
-}
-
-// ── launch ────────────────────────────────────────────────────────────────────
-
-func cmdLaunch(args []string) {
-	id := ""
-	if len(args) > 0 {
-		id = args[0]
-		args = args[1:]
-	}
-	loc, err := resolveProfileForLaunch(id)
-	if err != nil {
-		fatal(err)
-	}
-	p, err := loadProfileAt(loc.JSONPath)
-	if err != nil {
-		fatal(err)
-	}
-	// Local folder-format profiles may also carry a sibling settings.json.
-	settingsPath := loc.SettingsPath
-	if settingsPath == "" && loc.RepoAlias == "" {
-		settingsPath = localSettingsPath(loc.Name)
-	}
-
-	fmt.Fprintf(os.Stderr, "Launching Claude with profile: %s\n", loc.QualifiedID)
-
-	claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", loc.JSONPath}
-	claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
-	claudeArgs = append(claudeArgs, args...)
-
-	binary, err := exec.LookPath("claude")
-	if err != nil {
-		fatal(fmt.Errorf("claude not found in PATH"))
-	}
-	if err := syscall.Exec(binary, claudeArgs, os.Environ()); err != nil {
-		fatal(err)
-	}
-}
-
-// resolveProfileForLaunch turns a user-supplied id (or "" for interactive) into
-// a ProfileLocation, looking in both local profiles and registered repos.
-func resolveProfileForLaunch(id string) (*ProfileLocation, error) {
-	if id == "" {
-		picked, err := pickProfile()
-		if err != nil {
-			return nil, err
+	switch r.action {
+	case actLaunch:
+		// Indicators + workaround for the supervisor's /bg respawnFlags=[] bug:
+		// instead of `claude attach` (which would respawn under empty flags
+		// and lose the profile), we offer to `claude --resume <id>` via the
+		// wrapper itself, reapplying every flag. The supervisor's /bg'd
+		// worker is left orphaned but the conversation continues with full
+		// profile intact.
+		bgs := backgroundedByProfile()[r.profile]
+		runs := runningByProfile()[r.profile]
+		for _, w := range runs {
+			info("· %s has a foreground wrapper (PID %d, cwd %s, started %s)",
+				r.profile, w.PID, w.Cwd, time.Unix(w.StartedAt, 0).Format("15:04:05"))
 		}
-		id = picked
+		if len(bgs) > 0 {
+			var chosen *BackgroundedSession
+			if len(bgs) == 1 {
+				bs := bgs[0]
+				info("· %s has a backgrounded session %s (cwd %s, started %s)",
+					r.profile, shortSession(bs.SessionID), bs.Cwd, bs.StartedAt.Format("15:04:05"))
+				if confirm("Resume that conversation via the wrapper (full profile reapplied)?") {
+					chosen = &bs
+				}
+			} else {
+				info("· %s has %d backgrounded sessions — pick one to resume:", r.profile, len(bgs))
+				chosen = pickBackgroundedSession(r.profile, bgs)
+			}
+			if chosen != nil {
+				cmdRun([]string{r.profile, "--resume", chosen.SessionID})
+				return
+			}
+		}
+		if len(runs) > 0 && !confirm("Start a second instance in this terminal?") {
+			return
+		}
+		cmdRun([]string{r.profile})
+	case actAsk:
+		cmdAsk(r.prompt) // may syscall.Exec
+	case actNew:
+		cmdNew()
+	case actGenerate:
+		cmdGenerate("")
+	case actEdit:
+		cmdEdit([]string{r.profile})
+	case actDelete:
+		cmdDelete([]string{r.profile})
+	case actCopy:
+		cmdCopy([]string{r.profile})
+	case actExport:
+		cmdExport([]string{r.profile})
+	case actImport:
+		cmdImport(nil)
+	case actRepo:
+		cmdRepoList()
+		fmt.Fprintln(os.Stderr, "\nPress Enter to return to the menu...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
 	}
-	return resolveProfileLocation(id)
 }
 
 // ── list ──────────────────────────────────────────────────────────────────────
@@ -159,7 +162,9 @@ func cmdList() {
 		p, err := loadProfileAt(loc.JSONPath)
 		var servers string
 		var tags []string
+		var description string
 		if err == nil {
+			description = p.Description
 			var snames []string
 			for k := range p.McpServers {
 				snames = append(snames, k)
@@ -168,18 +173,25 @@ func cmdList() {
 			if len(p.DeniedTools) > 0 {
 				tags = append(tags, fmt.Sprintf("deny:%d", len(p.DeniedTools)))
 			}
-			if p.PermissionMode != "" {
-				tags = append(tags, "mode:"+p.PermissionMode)
+			// Surface the most useful settings inline so users don't need to open the file
+			s := parseSettings(p.Settings)
+			if m := getModel(s); m != "" {
+				tags = append(tags, "model:"+m)
 			}
-			if p.Model != "" {
-				tags = append(tags, "model:"+p.Model)
+			if pm := getPermissionMode(s); pm != "" {
+				tags = append(tags, "mode:"+pm)
 			}
-			settingsPath := loc.SettingsPath
-			if settingsPath == "" && loc.RepoAlias == "" {
-				settingsPath = localSettingsPath(loc.Name)
-			}
-			if settingsPath != "" || len(p.Settings) > 0 {
-				tags = append(tags, "settings")
+			if len(s) > 0 {
+				// Count keys other than model + permissions to indicate extra settings
+				extra := 0
+				for k := range s {
+					if k != "model" && k != "permissions" {
+						extra++
+					}
+				}
+				if extra > 0 {
+					tags = append(tags, fmt.Sprintf("+%d settings", extra))
+				}
 			}
 		}
 		source := "[local]"
@@ -191,6 +203,9 @@ func cmdList() {
 			extras = " [" + strings.Join(tags, " ") + "]"
 		}
 		fmt.Printf("%-30s %-10s %s%s\n", loc.QualifiedID, source, servers, extras)
+		if description != "" {
+			fmt.Printf("%-30s   — %s\n", "", description)
+		}
 	}
 }
 
@@ -209,7 +224,12 @@ func cmdNew() {
 		fatal(fmt.Errorf("profile %q already exists", name))
 	}
 
-	p := &Profile{McpServers: map[string]ServerConfig{}}
+	description := prompt("Description (purpose of this profile, optional)")
+
+	p := &Profile{
+		Description: strings.TrimSpace(description),
+		McpServers:  map[string]ServerConfig{},
+	}
 
 	for {
 		fmt.Fprintln(os.Stderr)
@@ -234,7 +254,7 @@ func cmdNew() {
 	success("Profile %q saved with %d server(s) → %s", name, len(p.McpServers), profilePath(name))
 
 	if confirm("Launch now?") {
-		cmdLaunch([]string{name})
+		cmdRun([]string{name})
 	}
 }
 
@@ -305,11 +325,13 @@ func cmdEdit(args []string) {
 	if editor == "" {
 		editor = "vi"
 	}
-	binary, err := exec.LookPath(editor)
-	if err != nil {
-		fatal(fmt.Errorf("%s not found", editor))
+	cmd := exec.Command(editor, profilePath(arg))
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fatal(err)
 	}
-	syscall.Exec(binary, []string{editor, profilePath(arg)}, os.Environ())
 }
 
 // ── delete ────────────────────────────────────────────────────────────────────
@@ -638,6 +660,13 @@ Commands:
   launch [name]      Launch claude with profile (local "name" or "repo-alias/name")
   list               List all profiles (local + repos)
   new                Create a new profile interactively
+  generate [intent]  Generate a profile with AI (researches MCPs/settings)
+  ask [prompt]       Classify a prompt to the best profile and launch it
+  run <profile>      Launch claude in a wrapper loop. Inside the session,
+                       /switch <name> swaps profile and --resumes; bare
+                       /switch opens the profile picker.
+  doctor             Run sanity checks (claude binary, hook resolution,
+                       profile JSON, stale marker, session dir) and report.
   edit [name]        Open local profile in $EDITOR (interactive if omitted)
   delete [name]      Delete a local profile (interactive if omitted)
   export [name]      Print profile JSON to stdout (interactive if omitted)
