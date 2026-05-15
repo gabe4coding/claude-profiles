@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -65,6 +66,44 @@ func (p profileItem) Title() string       { return p.titleStr }
 func (p profileItem) Description() string { return p.descStr }
 func (p profileItem) FilterValue() string { return p.loc.QualifiedID }
 
+// sectionHeaderItem is a non-selectable divider inserted between profile groups.
+// FilterValue returns "" so headers disappear when the user activates the filter.
+type sectionHeaderItem struct{ label string }
+
+func (h sectionHeaderItem) Title() string       { return h.label }
+func (h sectionHeaderItem) Description() string { return "" }
+func (h sectionHeaderItem) FilterValue() string { return "" }
+
+// hubDelegate renders sectionHeaderItems as styled dividers and profileItems
+// using focused/unfocused coral highlight depending on whether the list pane
+// currently has keyboard focus.
+type hubDelegate struct {
+	focused   list.DefaultDelegate
+	unfocused list.DefaultDelegate
+	isFocused bool
+}
+
+func (d hubDelegate) Height() int  { return d.focused.Height() }
+func (d hubDelegate) Spacing() int { return d.focused.Spacing() }
+
+func (d hubDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
+	return d.focused.Update(msg, m)
+}
+
+func (d hubDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	if h, ok := item.(sectionHeaderItem); ok {
+		label := sectionLabelStyle.Render(h.label)
+		rule := sectionRuleStyle.Render(strings.Repeat("─", 4))
+		fmt.Fprintln(w, "  "+rule+" "+label+" "+rule)
+		return
+	}
+	if d.isFocused {
+		d.focused.Render(w, m, index, item)
+	} else {
+		d.unfocused.Render(w, m, index, item)
+	}
+}
+
 type hubModel struct {
 	list   list.Model
 	input  textinput.Model
@@ -74,12 +113,9 @@ type hubModel struct {
 	height int
 	showOtherActions bool
 
-	// Two delegates: focusedDelegate uses the coral highlight for the selected
-	// row, unfocusedDelegate makes the selected row look like a normal row.
-	// We swap them as focus moves between the input and the list so the
-	// highlight only appears when the list itself is interactive.
-	focusedDelegate   list.DefaultDelegate
-	unfocusedDelegate list.DefaultDelegate
+	// delegate renders profileItems with coral highlight when the list pane has
+	// focus and sectionHeaderItems as styled dividers in all cases.
+	delegate hubDelegate
 
 	// Ask-prompt history cycling (shell-style ↑/↓ in the input).
 	// historyIdx == -1 means "not cycling" — the input value is the user's
@@ -89,18 +125,20 @@ type hubModel struct {
 	savedInput    string // user's in-progress text, restored when cycle ends
 }
 
-// setFocus moves focus and swaps the list delegate so the selection highlight
+// setFocus moves focus and updates the delegate so the selection highlight
 // only appears when the list is the active pane.
 func (m *hubModel) setFocus(t focusTarget) tea.Cmd {
 	m.focus = t
 	m.showOtherActions = false
 	if t == focusInput {
 		m.input.Focus()
-		m.list.SetDelegate(m.unfocusedDelegate)
+		m.delegate.isFocused = false
+		m.list.SetDelegate(m.delegate)
 		return textinput.Blink
 	}
 	m.input.Blur()
-	m.list.SetDelegate(m.focusedDelegate)
+	m.delegate.isFocused = true
+	m.list.SetDelegate(m.delegate)
 	return nil
 }
 
@@ -227,7 +265,7 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := m.setFocus(focusInput)
 		return m, cmd
 	case "up":
-		if m.list.Index() == 0 {
+		if m.list.Index() == firstSelectableIndex(m.list.Items()) {
 			cmd := m.setFocus(focusInput)
 			return m, cmd
 		}
@@ -274,9 +312,60 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.result = hubResult{action: actRepo}
 		return m, tea.Quit
 	}
+	prevIdx := m.list.Index()
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	m.skipHeaders(prevIdx)
 	return m, cmd
+}
+
+// skipHeaders advances the cursor past any sectionHeaderItem the list just
+// landed on. Direction is inferred from prevIdx vs the current index.
+func (m *hubModel) skipHeaders(prevIdx int) {
+	if _, isHeader := m.list.SelectedItem().(sectionHeaderItem); !isHeader {
+		return
+	}
+	items := m.list.Items()
+	idx := m.list.Index()
+	n := len(items)
+	forward := idx >= prevIdx
+	if forward {
+		for i := idx + 1; i < n; i++ {
+			if _, ok := items[i].(sectionHeaderItem); !ok {
+				m.list.Select(i)
+				return
+			}
+		}
+		for i := idx - 1; i >= 0; i-- {
+			if _, ok := items[i].(sectionHeaderItem); !ok {
+				m.list.Select(i)
+				return
+			}
+		}
+	} else {
+		for i := idx - 1; i >= 0; i-- {
+			if _, ok := items[i].(sectionHeaderItem); !ok {
+				m.list.Select(i)
+				return
+			}
+		}
+		for i := idx + 1; i < n; i++ {
+			if _, ok := items[i].(sectionHeaderItem); !ok {
+				m.list.Select(i)
+				return
+			}
+		}
+	}
+}
+
+// firstSelectableIndex returns the index of the first non-header item.
+func firstSelectableIndex(items []list.Item) int {
+	for i, it := range items {
+		if _, ok := it.(sectionHeaderItem); !ok {
+			return i
+		}
+	}
+	return 0
 }
 
 func (m hubModel) selectedID() string {
@@ -305,69 +394,108 @@ func runHub() hubResult {
 	running := runningByProfile()
 	bg := backgroundedByProfile()
 
+	// Classify locations into display groups.
+	var projectLocs, userLocs []ProfileLocation
+	repoLocs := map[string][]ProfileLocation{}
+	for _, loc := range locs {
+		switch {
+		case loc.RepoAlias == ".":
+			projectLocs = append(projectLocs, loc)
+		case loc.RepoAlias != "":
+			repoLocs[loc.RepoAlias] = append(repoLocs[loc.RepoAlias], loc)
+		default:
+			userLocs = append(userLocs, loc)
+		}
+	}
+	sortedAliases := make([]string, 0, len(repoLocs))
+	for alias := range repoLocs {
+		sortedAliases = append(sortedAliases, alias)
+	}
+	sort.Strings(sortedAliases)
+
+	makeProfileItem := func(loc ProfileLocation, pinned bool, promptName, promptText string) profileItem {
+		return profileItem{
+			loc:              loc,
+			titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], pinned, promptName),
+			descStr:          hubDesc(loc),
+			pinnedPromptText: promptText,
+		}
+	}
+
 	// Pinned profiles appear twice: once at the top as a quick-launch entry
 	// (with the associated prompt auto-selected on Enter) and again at their
 	// natural recency-sorted position so all prompts remain accessible.
 	var items []list.Item
-	for _, pe := range pins {
-		for _, loc := range locs {
-			if loc.QualifiedID != pe.ProfileID {
-				continue
-			}
-			pinnedPromptText := ""
-			if pe.PromptName != "" {
-				if p, err := loadProfileAt(loc.JSONPath); err == nil {
-					for _, pp := range p.Prompts {
-						if pp.Name == pe.PromptName {
-							pinnedPromptText = pp.Text
-							break
+	if len(pins) > 0 {
+		items = append(items, sectionHeaderItem{label: "Pinned"})
+		for _, pe := range pins {
+			for _, loc := range locs {
+				if loc.QualifiedID != pe.ProfileID {
+					continue
+				}
+				pinnedPromptText := ""
+				if pe.PromptName != "" {
+					if p, err := loadProfileAt(loc.JSONPath); err == nil {
+						for _, pp := range p.Prompts {
+							if pp.Name == pe.PromptName {
+								pinnedPromptText = pp.Text
+								break
+							}
 						}
 					}
 				}
+				items = append(items, makeProfileItem(loc, true, pe.PromptName, pinnedPromptText))
+				break
 			}
-			items = append(items, profileItem{
-				loc:              loc,
-				titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], true, pe.PromptName),
-				descStr:          hubDesc(loc),
-				pinnedPromptText: pinnedPromptText,
-			})
-			break
 		}
 	}
-	for _, loc := range locs {
-		items = append(items, profileItem{
-			loc:      loc,
-			titleStr: hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], false, ""),
-			descStr:  hubDesc(loc),
-		})
+	if len(projectLocs) > 0 {
+		items = append(items, sectionHeaderItem{label: "Project"})
+		for _, loc := range projectLocs {
+			items = append(items, makeProfileItem(loc, false, "", ""))
+		}
+	}
+	if len(userLocs) > 0 {
+		items = append(items, sectionHeaderItem{label: "User"})
+		for _, loc := range userLocs {
+			items = append(items, makeProfileItem(loc, false, "", ""))
+		}
+	}
+	for _, alias := range sortedAliases {
+		items = append(items, sectionHeaderItem{label: alias})
+		for _, loc := range repoLocs[alias] {
+			items = append(items, makeProfileItem(loc, false, "", ""))
+		}
 	}
 
 	// Focused delegate: selected row highlighted coral.
-	focused := list.NewDefaultDelegate()
-	focused.SetSpacing(1)
-	focused.ShowDescription = true
-	focused.Styles.SelectedTitle = focused.Styles.SelectedTitle.
+	focusedDel := list.NewDefaultDelegate()
+	focusedDel.SetSpacing(1)
+	focusedDel.ShowDescription = true
+	focusedDel.Styles.SelectedTitle = focusedDel.Styles.SelectedTitle.
 		Foreground(cdsCoral).
 		BorderForeground(cdsCoral).
 		Bold(true)
-	focused.Styles.SelectedDesc = focused.Styles.SelectedDesc.
+	focusedDel.Styles.SelectedDesc = focusedDel.Styles.SelectedDesc.
 		Foreground(cdsCoral).
 		BorderForeground(cdsCoral)
-	focused.Styles.NormalTitle = focused.Styles.NormalTitle.Foreground(cdsInk)
-	focused.Styles.NormalDesc = focused.Styles.NormalDesc.Foreground(cdsMuted)
-	focused.Styles.DimmedTitle = focused.Styles.DimmedTitle.Foreground(cdsMuted)
-	focused.Styles.DimmedDesc = focused.Styles.DimmedDesc.Foreground(cdsMuted)
-	focused.Styles.FilterMatch = focused.Styles.FilterMatch.
+	focusedDel.Styles.NormalTitle = focusedDel.Styles.NormalTitle.Foreground(cdsInk)
+	focusedDel.Styles.NormalDesc = focusedDel.Styles.NormalDesc.Foreground(cdsMuted)
+	focusedDel.Styles.DimmedTitle = focusedDel.Styles.DimmedTitle.Foreground(cdsMuted)
+	focusedDel.Styles.DimmedDesc = focusedDel.Styles.DimmedDesc.Foreground(cdsMuted)
+	focusedDel.Styles.FilterMatch = focusedDel.Styles.FilterMatch.
 		Foreground(cdsAmber).
 		Bold(true)
 
 	// Unfocused delegate: selected row is rendered like a normal row, so when
 	// the user is typing in the Ask input the list shows no "selected" cue.
-	unfocused := focused
-	unfocused.Styles.SelectedTitle = focused.Styles.NormalTitle
-	unfocused.Styles.SelectedDesc = focused.Styles.NormalDesc
+	unfocusedDel := focusedDel
+	unfocusedDel.Styles.SelectedTitle = focusedDel.Styles.NormalTitle
+	unfocusedDel.Styles.SelectedDesc = focusedDel.Styles.NormalDesc
 
-	l := list.New(items, unfocused, 0, 0)
+	del := hubDelegate{focused: focusedDel, unfocused: unfocusedDel, isFocused: false}
+
+	l := list.New(items, del, 0, 0)
 	l.SetShowTitle(false)
 	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(cdsMuted)
 	l.SetShowHelp(false)
@@ -384,12 +512,11 @@ func runHub() hubResult {
 	ti.Focus()
 
 	m := hubModel{
-		list:              l,
-		input:             ti,
-		focus:             focusInput,
-		historyIdx:        -1,
-		focusedDelegate:   focused,
-		unfocusedDelegate: unfocused,
+		list:       l,
+		input:      ti,
+		focus:      focusInput,
+		historyIdx: -1,
+		delegate:   del,
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
@@ -419,9 +546,11 @@ func sortLocationsByRecency(locs []ProfileLocation, recents map[string]int64) {
 // ── Rendering helpers ─────────────────────────────────────────────────────────
 
 var (
-	hubKeyStyle    = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
-	hubDimStyle    = lipgloss.NewStyle().Foreground(cdsMuted)
-	askPromptStyle = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
+	hubKeyStyle      = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
+	hubDimStyle      = lipgloss.NewStyle().Foreground(cdsMuted)
+	askPromptStyle   = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
+	sectionLabelStyle = lipgloss.NewStyle().Foreground(cdsInk).Bold(true)
+	sectionRuleStyle  = lipgloss.NewStyle().Foreground(cdsMuted)
 )
 
 func inputBlockStyle(focused bool) lipgloss.Style {
