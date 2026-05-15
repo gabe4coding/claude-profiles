@@ -291,6 +291,45 @@ func pickPrompt(prompts []ProfilePrompt) (string, error) {
 	return selected, nil
 }
 
+// pickPinPromptName presents the profile's prompts so the user can optionally
+// pin one for quick launch. Returns the selected prompt name, or "" for none.
+// Esc / abort returns an error — callers treat that as "no prompt selected".
+func pickPinPromptName(prompts []ProfilePrompt) (string, error) {
+	if !isTTY() {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "   0) [no prompt — launch interactively]")
+		for i, p := range prompts {
+			fmt.Fprintf(os.Stderr, "  %2d) %s\n", i+1, p.Name)
+		}
+		fmt.Fprintln(os.Stderr)
+		raw := promptLine(fmt.Sprintf("Pin a prompt for quick launch [0-%d, 0 = none]: ", len(prompts)))
+		var n int
+		fmt.Sscanf(strings.TrimSpace(raw), "%d", &n)
+		if n < 0 || n > len(prompts) {
+			return "", fmt.Errorf("invalid selection")
+		}
+		if n == 0 {
+			return "", nil
+		}
+		return prompts[n-1].Name, nil
+	}
+
+	opts := make([]huh.Option[string], len(prompts)+1)
+	opts[0] = huh.NewOption("[no prompt — launch interactively]", "")
+	for i, p := range prompts {
+		opts[i+1] = huh.NewOption(p.Name, p.Name)
+	}
+	var selected string
+	err := runField(huh.NewSelect[string]().
+		Title("Pin a prompt for quick launch (optional)").
+		Options(opts...).
+		Value(&selected))
+	if err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
 // pickBackgroundedSession shows a huh select with all backgrounded sessions
 // for the profile so the user can pick exactly which one to wrapper-resume.
 // Returns nil if the user cancelled or chose "skip".

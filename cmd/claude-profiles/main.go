@@ -173,7 +173,31 @@ func runHubAction(r hubResult) {
 		if len(runs) > 0 && !confirm("Start a second instance in this terminal?") {
 			return
 		}
-		cmdRun([]string{r.profile})
+		launchArgs := []string{r.profile}
+		if r.prompt != "" {
+			launchArgs = append(launchArgs, r.prompt)
+		}
+		cmdRun(launchArgs)
+	case actPin:
+		pins := loadPins()
+		if _, ok := findPin(pins, r.profile); ok {
+			pins = removePin(pins, r.profile)
+			_ = savePins(pins)
+			return
+		}
+		loc, err := resolveProfileLocation(r.profile)
+		if err != nil {
+			fatal(err)
+		}
+		p, _ := loadProfileAt(loc.JSONPath)
+		promptName := ""
+		if len(p.Prompts) > 0 {
+			if name, err := pickPinPromptName(p.Prompts); err == nil {
+				promptName = name
+			}
+		}
+		pins = addPin(pins, PinEntry{ProfileID: r.profile, PromptName: promptName})
+		_ = savePins(pins)
 	case actAsk:
 		cmdAsk(r.prompt) // may syscall.Exec
 	case actNew:
@@ -227,7 +251,7 @@ func cmdList() {
 				tags = append(tags, "isolated")
 			}
 			if p.Cwd != "" {
-				tags = append(tags, "pinned")
+				tags = append(tags, "cwd")
 			}
 			if kinds := profilePluginKinds(loc); len(kinds) > 0 {
 				tags = append(tags, "+"+strings.Join(kinds, "/"))

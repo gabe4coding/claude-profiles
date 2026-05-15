@@ -38,6 +38,7 @@ const (
 	actExport   hubAction = "export"
 	actImport   hubAction = "import"
 	actRepo     hubAction = "repo"
+	actPin      hubAction = "pin"
 	actQuit     hubAction = "quit"
 )
 
@@ -55,9 +56,10 @@ const (
 )
 
 type profileItem struct {
-	loc      ProfileLocation
-	titleStr string
-	descStr  string
+	loc              ProfileLocation
+	titleStr         string
+	descStr          string
+	pinnedPromptText string // pre-resolved prompt text; empty if not pinned or no prompt set
 }
 
 func (p profileItem) Title() string       { return p.titleStr }
@@ -230,9 +232,14 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.setFocus(focusInput)
 			return m, cmd
 		}
-	case "enter":
+	case "p":
 		if it := m.selectedID(); it != "" {
-			m.result = hubResult{action: actLaunch, profile: it}
+			m.result = hubResult{action: actPin, profile: it}
+			return m, tea.Quit
+		}
+	case "enter":
+		if it, ok := m.list.SelectedItem().(profileItem); ok && it.loc.QualifiedID != "" {
+			m.result = hubResult{action: actLaunch, profile: it.loc.QualifiedID, prompt: it.pinnedPromptText}
 			return m, tea.Quit
 		}
 	case "a":
@@ -293,15 +300,33 @@ func (m hubModel) View() string {
 
 func runHub() hubResult {
 	locs, _ := listAllLocations()
-	sortLocationsByRecency(locs, loadRecents())
+	pins := loadPins()
+	pinMap := map[string]PinEntry{}
+	for _, pe := range pins {
+		pinMap[pe.ProfileID] = pe
+	}
+	sortLocationsWithPins(locs, loadRecents(), pins)
 	running := runningByProfile()
 	bg := backgroundedByProfile()
 	items := make([]list.Item, len(locs))
 	for i, loc := range locs {
+		pe, pinned := pinMap[loc.QualifiedID]
+		pinnedPromptText := ""
+		if pinned && pe.PromptName != "" {
+			if p, err := loadProfileAt(loc.JSONPath); err == nil {
+				for _, pp := range p.Prompts {
+					if pp.Name == pe.PromptName {
+						pinnedPromptText = pp.Text
+						break
+					}
+				}
+			}
+		}
 		items[i] = profileItem{
-			loc:      loc,
-			titleStr: hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID]),
-			descStr:  hubDesc(loc),
+			loc:              loc,
+			titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], pinned, pe.PromptName),
+			descStr:          hubDesc(loc),
+			pinnedPromptText: pinnedPromptText,
 		}
 	}
 
@@ -363,11 +388,23 @@ func runHub() hubResult {
 	return final.result
 }
 
-// sortLocationsByRecency reorders locs so the most-recently-launched profile
-// is first. Profiles that have never been launched (absent from `recents`)
-// fall to the bottom in alphabetical order.
-func sortLocationsByRecency(locs []ProfileLocation, recents map[string]int64) {
+// sortLocationsWithPins reorders locs so that pinned profiles come first (in
+// pin order), followed by remaining profiles sorted by recency. Profiles never
+// launched fall to the bottom in alphabetical order.
+func sortLocationsWithPins(locs []ProfileLocation, recents map[string]int64, pins []PinEntry) {
+	pinOrder := map[string]int{}
+	for i, pe := range pins {
+		pinOrder[pe.ProfileID] = i
+	}
 	sort.SliceStable(locs, func(i, j int) bool {
+		pi, iIsPinned := pinOrder[locs[i].QualifiedID]
+		pj, jIsPinned := pinOrder[locs[j].QualifiedID]
+		if iIsPinned && jIsPinned {
+			return pi < pj
+		}
+		if iIsPinned != jIsPinned {
+			return iIsPinned
+		}
 		ti, hasI := recents[locs[i].QualifiedID]
 		tj, hasJ := recents[locs[j].QualifiedID]
 		if hasI && hasJ {
@@ -399,7 +436,7 @@ func inputBlockStyle(focused bool) lipgloss.Style {
 		Padding(0, 1)
 }
 
-func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession) string {
+func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession, pinned bool, pinnedPromptName string) string {
 	source := "local"
 	switch {
 	case loc.RepoAlias == ".":
@@ -439,7 +476,7 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 			tags = append(tags, "isolated")
 		}
 		if p.Cwd != "" {
-			tags = append(tags, "pinned")
+			tags = append(tags, "cwd")
 		}
 		if kinds := profilePluginKinds(loc); len(kinds) > 0 {
 			tags = append(tags, "+"+strings.Join(kinds, "/"))
@@ -452,7 +489,16 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 			tags = append(tags, "mode:"+pm)
 		}
 	}
-	return loc.QualifiedID + "  " + hubDimStyle.Render("· "+strings.Join(tags, " · "))
+
+	pinStyle := lipgloss.NewStyle().Foreground(cdsAmber).Bold(true)
+	prefix := ""
+	if pinned {
+		prefix = pinStyle.Render("★") + " "
+		if pinnedPromptName != "" {
+			tags = append([]string{pinStyle.Render("[" + pinnedPromptName + "]")}, tags...)
+		}
+	}
+	return prefix + loc.QualifiedID + "  " + hubDimStyle.Render("· "+strings.Join(tags, " · "))
 }
 
 func hubDesc(loc ProfileLocation) string {
@@ -526,6 +572,7 @@ func (m hubModel) hubHelpFooter() string {
 		}
 	case m.showOtherActions:
 		keys = []struct{ k, v string }{
+			{"p", "pin/unpin"},
 			{"c", "copy"},
 			{"x", "export"},
 			{"i", "import"},

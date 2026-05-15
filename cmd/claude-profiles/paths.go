@@ -56,6 +56,7 @@ func sessionsLedgerPath() string { return filepath.Join(profilesRoot(), "session
 func recentPath() string       { return filepath.Join(profilesRoot(), "recent.json") }
 func asksPath() string         { return filepath.Join(profilesRoot(), "asks.json") }
 func nextMarkerPath() string   { return filepath.Join(profilesRoot(), "next-marker") }
+func pinsPath() string         { return filepath.Join(profilesRoot(), "pins.json") }
 
 // claudeRootDirPath stays under ~/.claude — it's Claude Code's own filesystem
 // (commands/, projects/, daemon/), not ours.
