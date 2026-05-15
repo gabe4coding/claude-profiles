@@ -102,13 +102,13 @@ func main() {
 // actions are dispatched via single-key shortcuts (see hub.go).
 
 func cmdInteractive() {
-	// We deliberately do NOT bootstrap tmux at the hub level — that would
-	// wrap a short-lived TUI picker in tmux just to keep the exit-to-hub
-	// loop alive, and (on iTerm2) waste a -CC tab. Instead, cmdRun bootstraps
-	// tmux when a profile actually launches; that's where the long-lived
-	// session and any /delegate or worktree sub-windows live. Trade-off:
-	// exiting claude from a profile returns to the shell, not back to the
-	// hub picker. Run `claude-profiles` again to reopen the hub.
+	// Bootstrap tmux around the hub so:
+	//   - the hub picker has its own pane/tab (on iTerm2 -CC: a native tab)
+	//   - launched profiles open in SEPARATE tmux windows (see actLaunch),
+	//     so the hub tab survives across profile launches
+	//   - /delegate has somewhere to drop windows
+	bootstrapTmuxIfNeeded("claude-profiles", nil)
+
 	hubMode = true
 	defer func() { hubMode = false }()
 
@@ -165,18 +165,18 @@ func runHubAction(r hubResult) {
 				chosen = pickBackgroundedSession(r.profile, bgs)
 			}
 			if chosen != nil {
-				cmdRun([]string{r.profile, "--resume", chosen.SessionID})
+				launchFromHub(r.profile, []string{"--resume", chosen.SessionID})
 				return
 			}
 		}
 		if len(runs) > 0 && !confirm("Start a second instance in this terminal?") {
 			return
 		}
-		launchArgs := []string{r.profile}
+		var extra []string
 		if r.prompt != "" {
-			launchArgs = append(launchArgs, r.prompt)
+			extra = append(extra, r.prompt)
 		}
-		cmdRun(launchArgs)
+		launchFromHub(r.profile, extra)
 	case actPin:
 		pins := loadPins()
 		if _, ok := findPin(pins, r.profile); ok {
@@ -352,7 +352,42 @@ func cmdNew() {
 	success("Profile %q saved → %s", name, savedPath)
 
 	if confirm("Launch now?") {
-		cmdRun([]string{name})
+		launchFromHub(name, nil)
+	}
+}
+
+// launchFromHub spawns `claude-profiles run <profile> [extra...]` in a fresh
+// tmux window so the hub picker (running in its own window) stays alive.
+// Outside tmux it falls back to in-process cmdRun, which then bootstraps its
+// own tmux session.
+func launchFromHub(profile string, extra []string) {
+	if os.Getenv("TMUX") == "" {
+		args := append([]string{profile}, extra...)
+		cmdRun(args)
+		return
+	}
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		args := append([]string{profile}, extra...)
+		cmdRun(args)
+		return
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		warn("cannot locate own binary; launching in-place")
+		args := append([]string{profile}, extra...)
+		cmdRun(args)
+		return
+	}
+	parts := []string{shellQuote(self), "run", shellQuote(profile)}
+	for _, a := range extra {
+		parts = append(parts, shellQuote(a))
+	}
+	windowName := strings.NewReplacer("/", "-", ".", "-", ":", "-").Replace(profile)
+	if err := exec.Command(tmuxBin, "new-window", "-n", windowName, strings.Join(parts, " ")).Run(); err != nil {
+		warn("Failed to open new tmux window for profile: %v — falling back to in-place launch", err)
+		args := append([]string{profile}, extra...)
+		cmdRun(args)
 	}
 }
 
