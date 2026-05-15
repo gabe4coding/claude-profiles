@@ -32,7 +32,7 @@ Use AskUserQuestion to establish the three scope dimensions. Ask only what $ARGU
 
 If the first token of $ARGUMENTS exactly matches a directory under $PROFILES_DIR, skip this question — that is the profile to update.
 
-**2b. Location** — always ask unless it's obvious from context:
+**2b. Location** — always ask, no exceptions:
 > "Where should this profile live?"
 > Options:
 > - "Local (~/.claude-profiles/profiles/) — personal, never committed"
