@@ -102,14 +102,13 @@ func main() {
 // actions are dispatched via single-key shortcuts (see hub.go).
 
 func cmdInteractive() {
-	// Bootstrap tmux around the whole hub so /delegate has somewhere to drop
-	// windows, and so closing claude from a launched profile returns control
-	// to the hub (cmdRun's own bootstrap is a no-op once $TMUX is set, which
-	// means it stays in-process and the hub redraws when the wrapper loop
-	// returns). Without this, cmdRun's syscall.Exec into tmux destroys the
-	// hub process and there's nothing left to return to.
-	bootstrapTmuxIfNeeded("claude-profiles", nil)
-
+	// We deliberately do NOT bootstrap tmux at the hub level — that would
+	// wrap a short-lived TUI picker in tmux just to keep the exit-to-hub
+	// loop alive, and (on iTerm2) waste a -CC tab. Instead, cmdRun bootstraps
+	// tmux when a profile actually launches; that's where the long-lived
+	// session and any /delegate or worktree sub-windows live. Trade-off:
+	// exiting claude from a profile returns to the shell, not back to the
+	// hub picker. Run `claude-profiles` again to reopen the hub.
 	hubMode = true
 	defer func() { hubMode = false }()
 
