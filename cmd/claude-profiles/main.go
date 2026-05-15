@@ -72,6 +72,8 @@ func main() {
 		cmdDelegateRunner(args[1:])
 	case "doctor":
 		cmdDoctor()
+	case "analytics", "stats":
+		cmdAnalytics(args[1:])
 	case "probe":
 		cmdProbe(args[1:])
 	case "edit":
@@ -213,6 +215,10 @@ func runHubAction(r hubResult) {
 	case actRepo:
 		cmdRepoList()
 		fmt.Fprintln(os.Stderr, "\nPress Enter to return to the menu...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
+	case actAnalytics:
+		cmdAnalytics(nil)
+		fmt.Fprintln(os.Stderr, "Press Enter to return to the menu...")
 		bufio.NewReader(os.Stdin).ReadBytes('\n')
 	}
 }
@@ -953,6 +959,9 @@ Commands:
                        /switch opens the profile picker.
   doctor             Run sanity checks (claude binary, hook resolution,
                        profile JSON, stale marker, session dir) and report.
+  analytics          Show context window usage stats: peak context per session,
+                       per-profile cache efficiency, per-project totals, and
+                       recommendations for reducing context pressure.
   probe <profile>    Call FetchTools against each MCP server in the profile
    [server]            (or just <server>) and print the raw error/tool list.
   edit [name]        Edit a local profile: manage MCP tool allow/deny,

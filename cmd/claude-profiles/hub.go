@@ -39,8 +39,9 @@ const (
 	actExport   hubAction = "export"
 	actImport   hubAction = "import"
 	actRepo     hubAction = "repo"
-	actPin      hubAction = "pin"
-	actQuit     hubAction = "quit"
+	actPin       hubAction = "pin"
+	actAnalytics hubAction = "analytics"
+	actQuit      hubAction = "quit"
 )
 
 type hubResult struct {
@@ -466,6 +467,9 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.result = hubResult{action: actRepo}
 		return m, tea.Quit
+	case "s":
+		m.result = hubResult{action: actAnalytics}
+		return m, tea.Quit
 	}
 	prevIdx := m.list.Index()
 	var cmd tea.Cmd
@@ -794,6 +798,7 @@ func (m hubModel) hubHelpFooter() string {
 			{"x", "export"},
 			{"i", "import"},
 			{"r", "repos"},
+			{"s", "stats"},
 			{"esc", "back"},
 		}
 	default:
