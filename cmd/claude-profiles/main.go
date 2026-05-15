@@ -60,8 +60,6 @@ func main() {
 		cmdList()
 	case "new", "create":
 		cmdNew()
-	case "generate", "gen":
-		cmdGenerate(strings.Join(args[1:], " "))
 	case "ask":
 		cmdAsk(strings.Join(args[1:], " "))
 	case "run":
@@ -202,8 +200,6 @@ func runHubAction(r hubResult) {
 		cmdAsk(r.prompt) // may syscall.Exec
 	case actNew:
 		cmdNew()
-	case actGenerate:
-		cmdGenerate("")
 	case actEdit:
 		cmdEdit([]string{r.profile})
 	case actDelete:
@@ -962,7 +958,6 @@ Commands:
   launch [name]      Launch claude with profile (local "name" or "repo-alias/name")
   list               List all profiles (local + repos)
   new                Create a new profile interactively
-  generate [intent]  Generate a profile with AI (researches MCPs/settings)
   ask [prompt]       Classify a prompt to the best profile and launch it
   run <profile>      Launch claude in a wrapper loop. Inside the session,
                        /switch <name> swaps profile and --resumes; bare

@@ -31,7 +31,6 @@ const (
 	actLaunch   hubAction = "launch"
 	actAsk      hubAction = "ask"
 	actNew      hubAction = "new"
-	actGenerate hubAction = "generate"
 	actEdit     hubAction = "edit"
 	actDelete   hubAction = "delete"
 	actCopy     hubAction = "copy"
@@ -247,9 +246,6 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case "n":
 		m.result = hubResult{action: actNew}
-		return m, tea.Quit
-	case "g":
-		m.result = hubResult{action: actGenerate}
 		return m, tea.Quit
 	case "e":
 		if it := m.selectedID(); it != "" {
@@ -586,7 +582,6 @@ func (m hubModel) hubHelpFooter() string {
 		keys = []struct{ k, v string }{
 			{"↵", "launch"},
 			{"n", "new"},
-			{"g", "generate (AI)"},
 			{"e", "edit"},
 			{"d", "delete"},
 			{"/", "filter"},
