@@ -24,6 +24,63 @@ type ProfilePrompt struct {
 	Text string `json:"text"`
 }
 
+// ProfilePrefs holds user-specific metadata overrides for a profile, stored in
+// ~/.claude-profiles/profile-prefs.json keyed by the profile directory's
+// absolute path. Applied only when profile.json is absent from the profile
+// directory; when profile.json is present its values take precedence.
+type ProfilePrefs struct {
+	Description string          `json:"_description,omitempty"`
+	Isolated    bool            `json:"_isolated,omitempty"`
+	Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
+	Cwd         string          `json:"_cwd,omitempty"`
+}
+
+// ProfilePrefsStore is the on-disk shape of ~/.claude-profiles/profile-prefs.json.
+// Keys are absolute paths to profile directories (parent of profile.json).
+type ProfilePrefsStore map[string]ProfilePrefs
+
+func loadPrefsStore() ProfilePrefsStore {
+	data, err := os.ReadFile(profilePrefsPath())
+	if err != nil {
+		return ProfilePrefsStore{}
+	}
+	var store ProfilePrefsStore
+	if json.Unmarshal(data, &store) != nil || store == nil {
+		return ProfilePrefsStore{}
+	}
+	return store
+}
+
+func savePrefsStore(store ProfilePrefsStore) error {
+	if err := os.MkdirAll(filepath.Dir(profilePrefsPath()), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(profilePrefsPath(), append(data, '\n'), 0o644)
+}
+
+func loadProfilePrefs(dir string) ProfilePrefs {
+	return loadPrefsStore()[dir]
+}
+
+func saveProfilePrefs(dir string, prefs ProfilePrefs) error {
+	store := loadPrefsStore()
+	store[dir] = prefs
+	return savePrefsStore(store)
+}
+
+func deleteProfilePrefs(dir string) error {
+	store := loadPrefsStore()
+	if _, ok := store[dir]; !ok {
+		return nil
+	}
+	delete(store, dir)
+	return savePrefsStore(store)
+}
+
 type Profile struct {
 	// Description explains why this profile exists. Shown in the hub list and
 	// in `claude-profiles list`. Optional — empty means "no rationale recorded".
@@ -139,7 +196,7 @@ func listProfiles() ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(profilesDir(), e.Name(), "profile.json")); err != nil {
+		if !isProfileDir(filepath.Join(profilesDir(), e.Name())) {
 			continue
 		}
 		names = append(names, e.Name())
@@ -159,26 +216,6 @@ func loadProfile(name string) (*Profile, error) {
 //                     permissions.deny (overwrites any existing deny list)
 func saveProfileAt(dir string, p *Profile) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-
-	// profile.json — metadata only
-	type profileMeta struct {
-		Description string          `json:"_description,omitempty"`
-		Isolated    bool            `json:"_isolated,omitempty"`
-		Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
-		Cwd         string          `json:"_cwd,omitempty"`
-	}
-	metaData, err := json.MarshalIndent(profileMeta{
-		Description: p.Description,
-		Isolated:    p.Isolated,
-		Prompts:     p.Prompts,
-		Cwd:         p.Cwd,
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "profile.json"), append(metaData, '\n'), 0o644); err != nil {
 		return err
 	}
 
@@ -222,7 +259,16 @@ func saveProfileAt(dir string, p *Profile) error {
 	} else {
 		_ = os.Remove(settingsPath)
 	}
-	return nil
+
+	// Metadata (_description, _isolated, _prompts, _cwd) goes to the user prefs
+	// store keyed by dir. profile.json in the profile directory is intentionally
+	// not written here; if one exists on disk it wins at load time over these prefs.
+	return saveProfilePrefs(dir, ProfilePrefs{
+		Description: p.Description,
+		Isolated:    p.Isolated,
+		Prompts:     p.Prompts,
+		Cwd:         p.Cwd,
+	})
 }
 
 // saveProjectProfile writes a profile to .claude-profiles/<name>/ in (or
@@ -250,8 +296,7 @@ func saveProfile(name string, p *Profile) error {
 }
 
 func profileExists(name string) bool {
-	_, err := os.Stat(filepath.Join(profilesDir(), name, "profile.json"))
-	return err == nil
+	return isProfileDir(filepath.Join(profilesDir(), name))
 }
 
 // pluginSubdirs lists the folder names claude's --plugin-dir auto-discovers.
@@ -307,11 +352,13 @@ func isProfileDir(dir string) bool {
 // and settings.json from the same directory.
 func loadProfileAt(path string) (*Profile, error) {
 	var p Profile
+	profileFileExists := false
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	if err == nil {
+		profileFileExists = true
 		if err := json.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
@@ -358,8 +405,16 @@ func loadProfileAt(path string) (*Profile, error) {
 		}
 	}
 
-	// Fall back to .claude-plugin/plugin.json for description when profile.json
-	// doesn't carry one — covers marketplace plugins and standalone plugin dirs.
+	// When profile.json is absent, apply user prefs for all metadata fields.
+	if !profileFileExists {
+		prefs := loadProfilePrefs(filepath.Dir(path))
+		p.Description = prefs.Description
+		p.Isolated = prefs.Isolated
+		p.Prompts = prefs.Prompts
+		p.Cwd = prefs.Cwd
+	}
+
+	// Fall back to .claude-plugin/plugin.json for description (always last resort).
 	if p.Description == "" {
 		p.Description = pluginJSONDescription(filepath.Dir(path))
 	}

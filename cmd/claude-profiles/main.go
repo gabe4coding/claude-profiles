@@ -676,7 +676,9 @@ func cmdDelete(args []string) {
 	if !confirm(fmt.Sprintf("Delete %q?", loc.QualifiedID)) {
 		return
 	}
-	os.RemoveAll(filepath.Dir(loc.JSONPath))
+	dir := filepath.Dir(loc.JSONPath)
+	os.RemoveAll(dir)
+	_ = deleteProfilePrefs(dir)
 	success("Deleted.")
 }
 
