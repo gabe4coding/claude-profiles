@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 
@@ -321,12 +323,8 @@ func runHub() hubResult {
 	unfocused.Styles.SelectedDesc = focused.Styles.NormalDesc
 
 	l := list.New(items, unfocused, 0, 0)
-	l.Title = "claude-profiles"
-	l.Styles.Title = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(cdsCream).
-		Background(cdsCoral).
-		Padding(0, 1)
+	l.Title = hubTitleBar()
+	l.Styles.Title = lipgloss.NewStyle() // pre-rendered; no wrapping style
 	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(cdsMuted)
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)
@@ -447,6 +445,58 @@ func hubDesc(loc ProfileLocation) string {
 		return p.Description
 	}
 	return hubDimStyle.Render("(no description)")
+}
+
+func currentGitBranch() string {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// formatVersion makes the version display-friendly.
+// Proper semver (v1.2.3) is returned as-is.
+// Pseudo-versions are shortened to a 7-char hash (with * suffix if dirty).
+func formatVersion(v string) string {
+	if v == "dev" {
+		return "dev"
+	}
+	dirty := strings.HasSuffix(v, "+dirty")
+	clean := strings.TrimSuffix(v, "+dirty")
+	parts := strings.Split(clean, "-")
+	if len(parts) >= 3 {
+		hash := parts[len(parts)-1]
+		if len(hash) > 7 {
+			hash = hash[:7]
+		}
+		if dirty {
+			return hash + "*"
+		}
+		return hash
+	}
+	return v
+}
+
+func hubTitleBar() string {
+	badge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(cdsCream).
+		Background(cdsCoral).
+		Padding(0, 1).
+		Render("claude-profiles")
+
+	cwd, _ := os.Getwd()
+	parts := []string{formatVersion(version), shortenCwd(cwd)}
+	if branch := currentGitBranch(); branch != "" && branch != "HEAD" {
+		parts = append(parts, branch)
+	}
+	status := lipgloss.NewStyle().
+		Foreground(cdsMuted).
+		Padding(0, 1).
+		Render(strings.Join(parts, "  ·  "))
+
+	return badge + status
 }
 
 func hubHelpFooter() string {

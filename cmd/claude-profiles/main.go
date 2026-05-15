@@ -8,10 +8,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
 )
+
+// version is injected by -ldflags "-X main.version=v1.2.3" at release build
+// time. When that is absent (e.g. go install), the init() below fills it from
+// the module version embedded by the Go toolchain in the binary's build info.
+var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return // already set by ldflags
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 func main() {
 	args := os.Args[1:]
