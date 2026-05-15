@@ -748,10 +748,30 @@ func bootstrapTmuxIfNeeded(sessionName string, innerArgs []string) {
 	// Name the session per profile so re-running `claude-profiles run X`
 	// attaches to an existing X session instead of spinning up a parallel
 	// one. -A: attach if the named session exists, create otherwise.
-	tmuxArgs := []string{"tmux", "new-session", "-A", "-s", sessionName, inner}
+	//
+	// When the host terminal speaks tmux control mode (iTerm2, Warp), launch
+	// with -CC so windows render as native tabs in the host UI. Plain
+	// terminals get the standard tmux UI. Opt out with
+	// CLAUDE_PROFILES_NO_TMUX_CC=1.
+	tmuxArgs := []string{"tmux"}
+	if supportsTmuxControlMode() && os.Getenv("CLAUDE_PROFILES_NO_TMUX_CC") == "" {
+		tmuxArgs = append(tmuxArgs, "-CC")
+	}
+	tmuxArgs = append(tmuxArgs, "new-session", "-A", "-s", sessionName, inner)
 	if err := syscall.Exec(tmuxBin, tmuxArgs, os.Environ()); err != nil {
 		warn("tmux bootstrap failed (%v); continuing without tmux.", err)
 	}
+}
+
+// supportsTmuxControlMode reports whether the host terminal speaks tmux's
+// control-mode protocol (-CC). Currently iTerm2 and Warp implement it; other
+// terminals would dump raw "%output …" control messages to the screen.
+func supportsTmuxControlMode() bool {
+	switch os.Getenv("TERM_PROGRAM") {
+	case "iTerm.app", "WarpTerminal":
+		return true
+	}
+	return false
 }
 
 // tmuxSessionName picks a deterministic session name from the first positional
