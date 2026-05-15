@@ -560,26 +560,27 @@ func probeOne(profile, sname string, cfg ServerConfig) {
 // ── delete ────────────────────────────────────────────────────────────────────
 
 func cmdDelete(args []string) {
-	var name string
+	var arg string
 	if len(args) > 0 {
-		name = args[0]
+		arg = args[0]
 	} else {
 		var err error
-		name, err = pickProfile()
+		arg, err = pickProfile()
 		if err != nil {
 			fatal(err)
 		}
 	}
-	if strings.Contains(name, "/") {
+	loc, err := resolveProfileLocation(arg)
+	if err != nil {
+		fatal(err)
+	}
+	if loc.RepoAlias != "" && loc.RepoAlias != "." {
 		fatal(fmt.Errorf("repo profiles can't be deleted from here — manage them in the source repo"))
 	}
-	if !profileExists(name) {
-		fatal(fmt.Errorf("profile %q not found", name))
-	}
-	if !confirm(fmt.Sprintf("Delete %q?", name)) {
+	if !confirm(fmt.Sprintf("Delete %q?", loc.QualifiedID)) {
 		return
 	}
-	os.RemoveAll(filepath.Join(profilesDir(), name))
+	os.RemoveAll(filepath.Dir(loc.JSONPath))
 	success("Deleted.")
 }
 
