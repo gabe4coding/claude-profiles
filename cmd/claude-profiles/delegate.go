@@ -64,8 +64,10 @@ tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DEL
 echo "DELEGATE_ID=$DELG_ID"
 echo "DELEGATE_WINDOW=delegate-$DELG_ID"
 
-# Wait up to 10s for the runner to discover and announce its .jsonl path.
-for _ in $(seq 1 20); do
+# Wait up to 20s for the runner to discover and announce its .jsonl path.
+# Claude can take 10+s to write its first session line on slow startups (MCP
+# server boot, network checks, etc.) — 10s was too tight in practice.
+for _ in $(seq 1 40); do
   if [ -f "$DIR/jsonl-path.txt" ]; then break; fi
   sleep 0.5
 done
@@ -319,7 +321,17 @@ func cmdDelegateRunner(args []string) {
 		fatal(err)
 	}
 
-	claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", loc.JSONPath}
+	// Mirror cmdRun's split-format detection: prefer .mcp.json when present,
+	// fall back to profile.json (old combined format). Without this, profiles
+	// that only ship .mcp.json + settings.json (no profile.json) cause claude
+	// to fail at --strict-mcp-config because loc.JSONPath points at a missing
+	// profile.json — the delegate would exit without writing a session and the
+	// result would be "(delegate exited without a final assistant reply)".
+	mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+	if _, err := os.Stat(mcpConfigPath); err != nil {
+		mcpConfigPath = loc.JSONPath
+	}
+	claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 	pcopy := *p
 	pcopy.Settings = nil
 	claudeArgs = append(claudeArgs, claudeFlags(&pcopy, settingsPath)...)
