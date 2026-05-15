@@ -299,7 +299,7 @@ func runHub() hubResult {
 
 	// Focused delegate: selected row highlighted coral.
 	focused := list.NewDefaultDelegate()
-	focused.SetSpacing(0)
+	focused.SetSpacing(1)
 	focused.ShowDescription = true
 	focused.Styles.SelectedTitle = focused.Styles.SelectedTitle.
 		Foreground(cdsCoral).
