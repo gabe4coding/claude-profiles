@@ -373,6 +373,26 @@ func cmdEdit(args []string) {
 		}
 		arg = picked
 	}
+	// "./name" targets a project-local profile — open its directory in $EDITOR
+	// (the interactive edit menu is scoped to user-level profiles only).
+	if strings.HasPrefix(arg, "./") {
+		loc, err := resolveProfileLocation(arg)
+		if err != nil {
+			fatal(err)
+		}
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi"
+		}
+		cmd := exec.Command(editor, filepath.Dir(loc.JSONPath))
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if strings.Contains(arg, "/") {
 		fatal(fmt.Errorf("repo profiles are read-only — run: claude-profiles copy %s <local-name>", arg))
 	}

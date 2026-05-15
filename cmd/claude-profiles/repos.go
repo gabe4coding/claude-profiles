@@ -335,9 +335,22 @@ func repoProfilesRoot(repoRoot string) string {
 	return ""
 }
 
-// resolveProfileLocation finds a profile by name, accepting either a bare
-// local name or an "alias/name" qualified form.
+// resolveProfileLocation finds a profile by name, accepting:
+//   - bare name       → user-level local, then project-local
+//   - "./name"        → project-local (.claude-profiles/ in CWD) explicitly
+//   - "alias/name"    → registered repo profile
 func resolveProfileLocation(id string) (*ProfileLocation, error) {
+	// "./name" explicitly targets the project-local profile in the CWD.
+	if strings.HasPrefix(id, "./") {
+		name := id[2:]
+		for _, loc := range listCwdProfileLocations() {
+			if loc.Name == name {
+				loc.QualifiedID = id
+				return &loc, nil
+			}
+		}
+		return nil, fmt.Errorf("project profile not found: %s", id)
+	}
 	if strings.Contains(id, "/") {
 		parts := strings.SplitN(id, "/", 2)
 		alias, name := parts[0], parts[1]
@@ -381,12 +394,14 @@ func listAllLocations() ([]ProfileLocation, error) {
 			JSONPath:    profilePath(n),
 		})
 	}
-	// Project-local profiles from .claude-profiles/ in/above CWD; skip names
-	// already present as global local profiles so there's no duplicate.
+	// Project-local profiles from .claude-profiles/ in/above CWD. When a
+	// user-level local profile shares the same name, both are shown: the
+	// project copy gets QualifiedID="./name" so they resolve independently.
 	for _, loc := range listCwdProfileLocations() {
-		if !localSet[loc.Name] {
-			out = append(out, loc)
+		if localSet[loc.Name] {
+			loc.QualifiedID = "./" + loc.Name
 		}
+		out = append(out, loc)
 	}
 	out = append(out, listRepoProfiles()...)
 	return out, nil

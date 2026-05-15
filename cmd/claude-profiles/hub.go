@@ -391,7 +391,10 @@ func inputBlockStyle() lipgloss.Style {
 
 func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession) string {
 	source := "local"
-	if loc.RepoAlias != "" {
+	switch {
+	case loc.RepoAlias == ".":
+		source = "project"
+	case loc.RepoAlias != "":
 		source = "repo:" + loc.RepoAlias
 	}
 	tags := []string{hubDimStyle.Render(source)}
