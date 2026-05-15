@@ -111,8 +111,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Input takes 3 lines (border + text + spacer); footer 1; remainder is list
-		listH := msg.Height - 4
+		// padding(1) + title(1) + input-box(3) + spacer(1) + footer(1) = 7 overhead
+		listH := msg.Height - 7
 		if listH < 4 {
 			listH = 4
 		}
@@ -277,8 +277,8 @@ func (m hubModel) selectedID() string {
 }
 
 func (m hubModel) View() string {
-	inputView := inputBlockStyle().Render(askPromptStyle.Render("Ask  ") + m.input.View())
-	return inputView + "\n" + m.list.View() + "\n" + m.help
+	inputView := inputBlockStyle(m.focus == focusInput).Render(askPromptStyle.Render("Ask  ") + m.input.View())
+	return "\n" + hubTitleBar() + "\n" + inputView + "\n" + m.list.View() + "\n" + m.help
 }
 
 // ── Public entrypoint ─────────────────────────────────────────────────────────
@@ -323,8 +323,7 @@ func runHub() hubResult {
 	unfocused.Styles.SelectedDesc = focused.Styles.NormalDesc
 
 	l := list.New(items, unfocused, 0, 0)
-	l.Title = hubTitleBar()
-	l.Styles.Title = lipgloss.NewStyle() // pre-rendered; no wrapping style
+	l.SetShowTitle(false)
 	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(cdsMuted)
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)
@@ -382,10 +381,14 @@ var (
 	askPromptStyle = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
 )
 
-func inputBlockStyle() lipgloss.Style {
+func inputBlockStyle(focused bool) lipgloss.Style {
+	borderColor := cdsMuted
+	if focused {
+		borderColor = cdsCoral
+	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(cdsCoral).
+		BorderForeground(borderColor).
 		Padding(0, 1)
 }
 
