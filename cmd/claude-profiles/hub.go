@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -112,6 +113,15 @@ type hubModel struct {
 	width  int
 	height int
 	showOtherActions bool
+	showHidden       bool
+
+	// Raw data for rebuilding list items after hide/unhide.
+	locs       []ProfileLocation
+	pins       []PinEntry
+	pinMap     map[string]PinEntry
+	runningMap map[string][]RunningWrapper
+	bgMap      map[string][]BackgroundedSession
+	prefsStore ProfilePrefsStore
 
 	// delegate renders profileItems with coral highlight when the list pane has
 	// focus and sectionHeaderItems as styled dividers in all cases.
@@ -144,6 +154,109 @@ func (m *hubModel) setFocus(t focusTarget) tea.Cmd {
 
 func (m hubModel) Init() tea.Cmd {
 	return textinput.Blink
+}
+
+// buildItems constructs the list items from the stored raw data. Profiles
+// marked hidden in prefsStore are excluded from their normal sections and
+// collected into a "Hidden" section at the bottom. When showHidden is false
+// the section renders as a collapsed non-selectable header showing the count.
+func (m *hubModel) buildItems() []list.Item {
+	isHidden := func(loc ProfileLocation) bool {
+		return m.prefsStore[filepath.Dir(loc.JSONPath)].Hidden
+	}
+
+	makeItem := func(loc ProfileLocation, pinned bool, promptName, promptText string) profileItem {
+		return profileItem{
+			loc:              loc,
+			titleStr:         hubTitle(loc, m.runningMap[loc.QualifiedID], m.bgMap[loc.QualifiedID], pinned, promptName),
+			descStr:          hubDesc(loc),
+			pinnedPromptText: promptText,
+		}
+	}
+
+	var projectLocs, userLocs, hiddenLocs []ProfileLocation
+	repoLocs := map[string][]ProfileLocation{}
+	for _, loc := range m.locs {
+		if isHidden(loc) {
+			hiddenLocs = append(hiddenLocs, loc)
+			continue
+		}
+		switch {
+		case loc.RepoAlias == ".":
+			projectLocs = append(projectLocs, loc)
+		case loc.RepoAlias != "":
+			repoLocs[loc.RepoAlias] = append(repoLocs[loc.RepoAlias], loc)
+		default:
+			userLocs = append(userLocs, loc)
+		}
+	}
+	sortedAliases := make([]string, 0, len(repoLocs))
+	for alias := range repoLocs {
+		sortedAliases = append(sortedAliases, alias)
+	}
+	sort.Strings(sortedAliases)
+
+	var items []list.Item
+
+	// Pinned section (hidden profiles excluded even if pinned).
+	if len(m.pins) > 0 {
+		var pinnedItems []list.Item
+		for _, pe := range m.pins {
+			for _, loc := range m.locs {
+				if loc.QualifiedID != pe.ProfileID || isHidden(loc) {
+					continue
+				}
+				pinnedPromptText := ""
+				if pe.PromptName != "" {
+					if p, err := loadProfileAt(loc.JSONPath); err == nil {
+						for _, pp := range p.Prompts {
+							if pp.Name == pe.PromptName {
+								pinnedPromptText = pp.Text
+								break
+							}
+						}
+					}
+				}
+				pinnedItems = append(pinnedItems, makeItem(loc, true, pe.PromptName, pinnedPromptText))
+				break
+			}
+		}
+		if len(pinnedItems) > 0 {
+			items = append(items, sectionHeaderItem{label: "Pinned"})
+			items = append(items, pinnedItems...)
+		}
+	}
+	if len(projectLocs) > 0 {
+		items = append(items, sectionHeaderItem{label: "Project"})
+		for _, loc := range projectLocs {
+			items = append(items, makeItem(loc, false, "", ""))
+		}
+	}
+	if len(userLocs) > 0 {
+		items = append(items, sectionHeaderItem{label: "User"})
+		for _, loc := range userLocs {
+			items = append(items, makeItem(loc, false, "", ""))
+		}
+	}
+	for _, alias := range sortedAliases {
+		items = append(items, sectionHeaderItem{label: alias})
+		for _, loc := range repoLocs[alias] {
+			items = append(items, makeItem(loc, false, "", ""))
+		}
+	}
+
+	if len(hiddenLocs) > 0 {
+		if m.showHidden {
+			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Hidden (%d)  ·  H to collapse", len(hiddenLocs))})
+			for _, loc := range hiddenLocs {
+				items = append(items, makeItem(loc, false, "", ""))
+			}
+		} else {
+			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Hidden (%d)  ·  H to reveal", len(hiddenLocs))})
+		}
+	}
+
+	return items
 }
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -274,6 +387,48 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.result = hubResult{action: actPin, profile: it}
 			return m, tea.Quit
 		}
+	case "h":
+		if selectedID := m.selectedID(); selectedID != "" {
+			for _, loc := range m.locs {
+				if loc.QualifiedID != selectedID {
+					continue
+				}
+				dir := filepath.Dir(loc.JSONPath)
+				prefs := m.prefsStore[dir]
+				prefs.Hidden = !prefs.Hidden
+				if saveProfilePrefs(dir, prefs) == nil {
+					m.prefsStore[dir] = prefs
+					newItems := m.buildItems()
+					m.list.SetItems(newItems)
+					// If we just hid the profile, find next selectable item.
+					if prefs.Hidden {
+						m.skipHeaders(m.list.Index())
+					} else {
+						// Unhidden: restore cursor to it.
+						for i, it := range newItems {
+							if pi, ok := it.(profileItem); ok && pi.loc.QualifiedID == selectedID {
+								m.list.Select(i)
+								break
+							}
+						}
+					}
+				}
+				break
+			}
+		}
+		return m, nil
+	case "H":
+		m.showHidden = !m.showHidden
+		selectedID := m.selectedID()
+		newItems := m.buildItems()
+		m.list.SetItems(newItems)
+		for i, it := range newItems {
+			if pi, ok := it.(profileItem); ok && pi.loc.QualifiedID == selectedID {
+				m.list.Select(i)
+				break
+			}
+		}
+		return m, nil
 	case "enter":
 		if it, ok := m.list.SelectedItem().(profileItem); ok && it.loc.QualifiedID != "" {
 			m.result = hubResult{action: actLaunch, profile: it.loc.QualifiedID, prompt: it.pinnedPromptText}
@@ -394,80 +549,6 @@ func runHub() hubResult {
 	running := runningByProfile()
 	bg := backgroundedByProfile()
 
-	// Classify locations into display groups.
-	var projectLocs, userLocs []ProfileLocation
-	repoLocs := map[string][]ProfileLocation{}
-	for _, loc := range locs {
-		switch {
-		case loc.RepoAlias == ".":
-			projectLocs = append(projectLocs, loc)
-		case loc.RepoAlias != "":
-			repoLocs[loc.RepoAlias] = append(repoLocs[loc.RepoAlias], loc)
-		default:
-			userLocs = append(userLocs, loc)
-		}
-	}
-	sortedAliases := make([]string, 0, len(repoLocs))
-	for alias := range repoLocs {
-		sortedAliases = append(sortedAliases, alias)
-	}
-	sort.Strings(sortedAliases)
-
-	makeProfileItem := func(loc ProfileLocation, pinned bool, promptName, promptText string) profileItem {
-		return profileItem{
-			loc:              loc,
-			titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], pinned, promptName),
-			descStr:          hubDesc(loc),
-			pinnedPromptText: promptText,
-		}
-	}
-
-	// Pinned profiles appear twice: once at the top as a quick-launch entry
-	// (with the associated prompt auto-selected on Enter) and again at their
-	// natural recency-sorted position so all prompts remain accessible.
-	var items []list.Item
-	if len(pins) > 0 {
-		items = append(items, sectionHeaderItem{label: "Pinned"})
-		for _, pe := range pins {
-			for _, loc := range locs {
-				if loc.QualifiedID != pe.ProfileID {
-					continue
-				}
-				pinnedPromptText := ""
-				if pe.PromptName != "" {
-					if p, err := loadProfileAt(loc.JSONPath); err == nil {
-						for _, pp := range p.Prompts {
-							if pp.Name == pe.PromptName {
-								pinnedPromptText = pp.Text
-								break
-							}
-						}
-					}
-				}
-				items = append(items, makeProfileItem(loc, true, pe.PromptName, pinnedPromptText))
-				break
-			}
-		}
-	}
-	if len(projectLocs) > 0 {
-		items = append(items, sectionHeaderItem{label: "Project"})
-		for _, loc := range projectLocs {
-			items = append(items, makeProfileItem(loc, false, "", ""))
-		}
-	}
-	if len(userLocs) > 0 {
-		items = append(items, sectionHeaderItem{label: "User"})
-		for _, loc := range userLocs {
-			items = append(items, makeProfileItem(loc, false, "", ""))
-		}
-	}
-	for _, alias := range sortedAliases {
-		items = append(items, sectionHeaderItem{label: alias})
-		for _, loc := range repoLocs[alias] {
-			items = append(items, makeProfileItem(loc, false, "", ""))
-		}
-	}
-
 	// Focused delegate: selected row highlighted coral.
 	focusedDel := list.NewDefaultDelegate()
 	focusedDel.SetSpacing(1)
@@ -495,13 +576,6 @@ func runHub() hubResult {
 
 	del := hubDelegate{focused: focusedDel, unfocused: unfocusedDel, isFocused: false}
 
-	l := list.New(items, del, 0, 0)
-	l.SetShowTitle(false)
-	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(cdsMuted)
-	l.SetShowHelp(false)
-	l.SetFilteringEnabled(true)
-	l.SetShowStatusBar(false)
-
 	ti := textinput.New()
 	ti.Placeholder = "Describe what you want to do — ↑ recall past asks · ↓/Tab → list · Enter to ask"
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(cdsCoral).Bold(true)
@@ -512,12 +586,25 @@ func runHub() hubResult {
 	ti.Focus()
 
 	m := hubModel{
-		list:       l,
 		input:      ti,
 		focus:      focusInput,
 		historyIdx: -1,
 		delegate:   del,
+		locs:       locs,
+		pins:       pins,
+		pinMap:     pinMap,
+		runningMap: running,
+		bgMap:      bg,
+		prefsStore: loadPrefsStore(),
 	}
+
+	l := list.New(m.buildItems(), del, 0, 0)
+	l.SetShowTitle(false)
+	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(cdsMuted)
+	l.SetShowHelp(false)
+	l.SetFilteringEnabled(true)
+	l.SetShowStatusBar(false)
+	m.list = l
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
 	if err != nil {
@@ -700,6 +787,8 @@ func (m hubModel) hubHelpFooter() string {
 		}
 	case m.showOtherActions:
 		keys = []struct{ k, v string }{
+			{"h", "hide/unhide"},
+			{"H", "hidden section"},
 			{"p", "pin/unpin"},
 			{"c", "copy"},
 			{"x", "export"},

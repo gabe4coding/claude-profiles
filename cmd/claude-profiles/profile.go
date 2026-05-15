@@ -31,6 +31,7 @@ type ProfilePrompt struct {
 type ProfilePrefs struct {
 	Description string          `json:"_description,omitempty"`
 	Isolated    bool            `json:"_isolated,omitempty"`
+	Hidden      bool            `json:"_hidden,omitempty"`
 	Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
 	Cwd         string          `json:"_cwd,omitempty"`
 }
@@ -263,9 +264,12 @@ func saveProfileAt(dir string, p *Profile) error {
 	// Metadata (_description, _isolated, _prompts, _cwd) goes to the user prefs
 	// store keyed by dir. profile.json in the profile directory is intentionally
 	// not written here; if one exists on disk it wins at load time over these prefs.
+	// Preserve hidden state so editing a profile doesn't accidentally unhide it.
+	existingPrefs := loadProfilePrefs(dir)
 	return saveProfilePrefs(dir, ProfilePrefs{
 		Description: p.Description,
 		Isolated:    p.Isolated,
+		Hidden:      existingPrefs.Hidden,
 		Prompts:     p.Prompts,
 		Cwd:         p.Cwd,
 	})
