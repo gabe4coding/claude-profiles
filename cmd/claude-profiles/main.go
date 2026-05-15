@@ -406,12 +406,6 @@ func cmdEdit(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	// Project and repo profiles: promote to a CWD-pinned local override so the
-	// source stays clean (project files committed to git; repo cache read-only).
-	if loc.RepoAlias != "" {
-		editAsLocalOverride(*loc)
-		return
-	}
 	// Non-TTY fallback: open the profile folder directly in $EDITOR.
 	if !isTTY() {
 		openInEditor(filepath.Dir(loc.JSONPath))
@@ -438,6 +432,21 @@ func openInEditor(path string) {
 // $EDITOR branch picks up.
 func runEditMenu(loc ProfileLocation) {
 	dir := filepath.Dir(loc.JSONPath)
+	// Project and repo profiles: only write user prefs (isolated, prompts) —
+	// don't touch the source files which are either git-tracked or a sync cache.
+	var saveFn func(*Profile) error
+	if loc.RepoAlias != "" {
+		saveFn = func(p *Profile) error {
+			return saveProfilePrefs(dir, ProfilePrefs{
+				Description: p.Description,
+				Isolated:    p.Isolated,
+				Prompts:     p.Prompts,
+				Cwd:         p.Cwd,
+			})
+		}
+	} else {
+		saveFn = func(p *Profile) error { return saveProfileAt(dir, p) }
+	}
 	for {
 		p, err := loadProfileAt(loc.JSONPath)
 		if err != nil {
@@ -457,7 +466,7 @@ func runEditMenu(loc ProfileLocation) {
 			}
 		case "isolated":
 			p.Isolated = !p.Isolated
-			if err := saveProfileAt(dir, p); err != nil {
+			if err := saveFn(p); err != nil {
 				fatal(err)
 			}
 			state := "off"
@@ -466,7 +475,7 @@ func runEditMenu(loc ProfileLocation) {
 			}
 			info("Isolated mode is now %s.", state)
 		case "prompts":
-			managePrompts(p, loc)
+			managePrompts(p, loc, saveFn)
 		case "plugin":
 			manageProfilePlugin(loc)
 		case "editor":
@@ -475,84 +484,6 @@ func runEditMenu(loc ProfileLocation) {
 			return
 		}
 	}
-}
-
-// editAsLocalOverride promotes a project or repo profile to a CWD-pinned local
-// copy and opens the interactive edit menu on it. Project profiles use their
-// bare name so the hub shows both "./name" (project) and "name" (local override)
-// simultaneously. Repo profiles prefix with the alias (e.g. "myrepo-name").
-// If a matching CWD-pinned local profile already exists it is reused directly.
-func editAsLocalOverride(src ProfileLocation) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fatal(err)
-	}
-
-	// Project profiles: same name as source so hub shows both "./name" and "name".
-	// Repo profiles: "alias-name" to distinguish from any project/local profile.
-	defaultName := src.Name
-	if src.RepoAlias != "." {
-		defaultName = src.RepoAlias + "-" + src.Name
-	}
-
-	// Reuse an existing CWD-pinned override without prompting.
-	if profileExists(defaultName) {
-		if existing, err := loadProfile(defaultName); err == nil && existing.Cwd == cwd {
-			runEditMenu(ProfileLocation{
-				Name:        defaultName,
-				QualifiedID: defaultName,
-				JSONPath:    profilePath(defaultName),
-			})
-			return
-		}
-	}
-
-	// First time: explain what's happening and ask for the local name.
-	sourceKind := "repo"
-	if src.RepoAlias == "." {
-		sourceKind = "project"
-	}
-	info("%s profile %q is read-only — creating a local CWD-pinned override.", sourceKind, src.QualifiedID)
-
-	localName := defaultName
-	if isTTY() {
-		localName = promptWithDefault("Local override name", defaultName)
-		localName = strings.ReplaceAll(localName, " ", "-")
-		if localName == "" {
-			localName = defaultName
-		}
-	}
-
-	if profileExists(localName) {
-		if existing, err := loadProfile(localName); err == nil && existing.Cwd == cwd {
-			runEditMenu(ProfileLocation{
-				Name:        localName,
-				QualifiedID: localName,
-				JSONPath:    profilePath(localName),
-			})
-			return
-		}
-		if !confirm(fmt.Sprintf("Local profile %q already exists. Overwrite?", localName)) {
-			return
-		}
-	}
-
-	p, err := loadProfileAt(src.JSONPath)
-	if err != nil {
-		fatal(err)
-	}
-	p.Cwd = cwd
-
-	if err := saveProfile(localName, p); err != nil {
-		fatal(err)
-	}
-	success("Created local override %q (visible only in %s)", localName, cwd)
-
-	runEditMenu(ProfileLocation{
-		Name:        localName,
-		QualifiedID: localName,
-		JSONPath:    profilePath(localName),
-	})
 }
 
 // ── probe ─────────────────────────────────────────────────────────────────────

@@ -721,10 +721,16 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 	promptCount := len(p.Prompts)
 	promptsLabel := fmt.Sprintf("Session prompts — pre-filled starters (%d defined)", promptCount)
 
-	action := "tools"
-	err := runField(huh.NewSelect[string]().
-		Title("Edit " + loc.QualifiedID).
-		Options(
+	var opts []huh.Option[string]
+	if loc.RepoAlias != "" {
+		// Project and repo profiles: only prefs-backed options are safe to edit.
+		opts = []huh.Option[string]{
+			huh.NewOption(isolatedLabel, "isolated"),
+			huh.NewOption(promptsLabel, "prompts"),
+			huh.NewOption("Done", "done"),
+		}
+	} else {
+		opts = []huh.Option[string]{
 			huh.NewOption(toolsLabel, "tools"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption(isolatedLabel, "isolated"),
@@ -732,7 +738,12 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile folder in $EDITOR", "editor"),
 			huh.NewOption("Done", "done"),
-		).
+		}
+	}
+	action := opts[0].Value
+	err := runField(huh.NewSelect[string]().
+		Title("Edit " + loc.QualifiedID).
+		Options(opts...).
 		Value(&action))
 	handleAbort(err)
 	return action
@@ -923,8 +934,7 @@ func clearServerDeniedTools(p *Profile, sname string) {
 
 // managePrompts is the interactive sub-menu for adding, editing, and deleting
 // _prompts entries on a profile. Saves after each change; Esc returns to caller.
-func managePrompts(p *Profile, loc ProfileLocation) {
-	dir := filepath.Dir(loc.JSONPath)
+func managePrompts(p *Profile, loc ProfileLocation, save func(*Profile) error) {
 	for {
 		opts := make([]huh.Option[string], 0, len(p.Prompts)+1)
 		for i, pr := range p.Prompts {
@@ -951,7 +961,7 @@ func managePrompts(p *Profile, loc ProfileLocation) {
 
 		if sel == "add" {
 			if addPrompt(p) {
-				if err := saveProfileAt(dir, p); err != nil {
+				if err := save(p); err != nil {
 					fatal(err)
 				}
 			}
@@ -964,7 +974,7 @@ func managePrompts(p *Profile, loc ProfileLocation) {
 			continue
 		}
 		if promptAction(p, idx) {
-			if err := saveProfileAt(dir, p); err != nil {
+			if err := save(p); err != nil {
 				fatal(err)
 			}
 		}
