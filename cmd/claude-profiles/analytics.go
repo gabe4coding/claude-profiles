@@ -272,6 +272,30 @@ func cmdAnalytics(_ []string) {
 	fmt.Fprintf(os.Stderr, "\n%s\n\n", styleInfo.Render(
 		fmt.Sprintf("Scanned %d sessions across %d project(s)", len(sessions), countProjects(sessions))))
 
+	// ── Legend ────────────────────────────────────────────────────────────
+
+	legend := []struct{ key, desc string }{
+		{"in tokens", "Σ(input + cache_read + cache_create) per turn, summed across all turns.\n" +
+			"              Context is re-read in full every turn, so this greatly exceeds\n" +
+			"              peak context × sessions — it reflects actual API processing load."},
+		{"Peak / Sys%", "Highest single-turn context vs the 200k limit.\n" +
+			"              Sys% = system prompt share of peak (first-turn cache_read).\n" +
+			"              High Sys% → CLAUDE.md or hook output is large relative to work done."},
+		{"Conv%", "Context added beyond the first turn: conversation history + tool results.\n" +
+			"              High is normal in long sessions. Close to 0% = very short session."},
+		{"Cache Hit", "cache_read / (cache_read + cache_create). High is good — it means\n" +
+			"              the system prompt stays stable across turns and you're paying the\n" +
+			"              cheaper $0.30/MTok cache-read rate instead of $3.00/MTok fresh input."},
+		{"Est. Cost", "Calculated from token counts × Anthropic list prices. Not billed cost\n" +
+			"              (discounts, free tier, or API credits are not reflected)."},
+	}
+	fmt.Fprintln(os.Stderr, dimStyle.Render("How to read this output:"))
+	for _, l := range legend {
+		fmt.Fprintf(os.Stderr, "%s\n",
+			dimStyle.Render(fmt.Sprintf("  %-12s  %s", l.key, l.desc)))
+	}
+	fmt.Fprintln(os.Stderr)
+
 	// ── Project Overview ──────────────────────────────────────────────────
 
 	// Aggregate global and per-model totals.
@@ -330,12 +354,11 @@ func cmdAnalytics(_ []string) {
 
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Project Overview"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %s  %s in · %s out   Est. cost: %s %s\n\n",
+	fmt.Fprintf(os.Stderr, "  %s  %s in · %s out   Est. cost: %s\n\n",
 		boldStyle.Render(fmt.Sprintf("%d sessions", global.Sessions)),
 		formatTokens(global.TotalInput+global.CacheRead+global.CacheCreate),
 		formatTokens(global.TotalOutput),
-		styleTitle.Render(fmt.Sprintf("$%.2f", totalCost)),
-		dimStyle.Render("(calculated from tokens × Anthropic list prices)"))
+		styleTitle.Render(fmt.Sprintf("$%.2f", totalCost)))
 
 	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Render("Model distribution (by turns)"))
 	dot()
