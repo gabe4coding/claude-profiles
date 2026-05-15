@@ -9,7 +9,7 @@
       "denyRead": ["~/.ssh/id_*"]
     },
     "network": {
-      "allowedDomains": ["*.amplitude.com", "*.datadoghq.com"]
+      "allowedDomains": ["*.amplitude.com", "*.datadoghq.com", "*.datadoghq.eu"]
     }
   }
 }
