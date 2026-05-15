@@ -1,0 +1,15 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "defaultMode": "default"
+  },
+  "sandbox": {
+    "filesystem": {
+      "denyWrite": ["~/.ssh", "~/.aws", "~/.config/gh"],
+      "denyRead": ["~/.ssh/id_*"]
+    },
+    "network": {
+      "allowedDomains": ["*.amplitude.com", "*.datadoghq.com"]
+    }
+  }
+}

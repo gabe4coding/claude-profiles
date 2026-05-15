@@ -1,0 +1,10 @@
+{
+  "_description": "Cross Amplitude behavioral data with Datadog observability metrics for structured reporting.",
+  "_isolated": true,
+  "_prompts": [
+    {
+      "name": "Cross-data report",
+      "text": "Pull events from Amplitude and metrics from Datadog for a given time range, then produce a structured cross-platform report."
+    }
+  ]
+}
