@@ -459,6 +459,7 @@ func ensureSwitchSlashCommand() error {
 	}
 	commands := []struct{ name, body string }{
 		{"handoff.md", switchSlashCommand},
+		{"generate.md", generateSlashCommand},
 	}
 	if tmuxAvailable() {
 		commands = append(commands, struct{ name, body string }{"delegate.md", delegateSlashCommand})
