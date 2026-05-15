@@ -220,6 +220,9 @@ func cmdList() {
 			if p.Isolated {
 				tags = append(tags, "isolated")
 			}
+			if p.Cwd != "" {
+				tags = append(tags, "pinned")
+			}
 			if kinds := profilePluginKinds(loc); len(kinds) > 0 {
 				tags = append(tags, "+"+strings.Join(kinds, "/"))
 			}
@@ -377,9 +380,10 @@ func cmdEdit(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	// Repo profiles are read-only.
+	// Repo profiles: promote to a CWD-pinned local override instead of blocking.
 	if loc.RepoAlias != "" && loc.RepoAlias != "." {
-		fatal(fmt.Errorf("repo profiles are read-only — run: claude-profiles copy %s <local-name>", arg))
+		editAsLocalOverride(*loc)
+		return
 	}
 	// Non-TTY fallback: open the profile folder directly in $EDITOR.
 	if !isTTY() {
@@ -444,6 +448,73 @@ func runEditMenu(loc ProfileLocation) {
 			return
 		}
 	}
+}
+
+// editAsLocalOverride promotes a repo profile to a CWD-pinned local copy and
+// opens the interactive edit menu on it. If a local profile already exists with
+// _cwd matching the current directory and the suggested name, we reuse it.
+func editAsLocalOverride(src ProfileLocation) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal(err)
+	}
+
+	defaultName := src.RepoAlias + "-" + src.Name
+
+	// Reuse an existing override if one already exists for this CWD.
+	if profileExists(defaultName) {
+		if existing, err := loadProfile(defaultName); err == nil && existing.Cwd == cwd {
+			info("Using existing local override %q (pinned to %s)", defaultName, cwd)
+			runEditMenu(ProfileLocation{
+				Name:        defaultName,
+				QualifiedID: defaultName,
+				JSONPath:    profilePath(defaultName),
+			})
+			return
+		}
+	}
+
+	// Prompt for the local name.
+	localName := defaultName
+	if isTTY() {
+		localName = promptWithDefault("Local override name", defaultName)
+		localName = strings.ReplaceAll(localName, " ", "-")
+		if localName == "" {
+			localName = defaultName
+		}
+	}
+
+	if profileExists(localName) {
+		if existing, err := loadProfile(localName); err == nil && existing.Cwd == cwd {
+			info("Using existing local override %q (pinned to %s)", localName, cwd)
+			runEditMenu(ProfileLocation{
+				Name:        localName,
+				QualifiedID: localName,
+				JSONPath:    profilePath(localName),
+			})
+			return
+		}
+		if !confirm(fmt.Sprintf("Local profile %q already exists. Overwrite?", localName)) {
+			return
+		}
+	}
+
+	p, err := loadProfileAt(src.JSONPath)
+	if err != nil {
+		fatal(err)
+	}
+	p.Cwd = cwd
+
+	if err := saveProfile(localName, p); err != nil {
+		fatal(err)
+	}
+	success("Created local override %q (visible only in %s)", localName, cwd)
+
+	runEditMenu(ProfileLocation{
+		Name:        localName,
+		QualifiedID: localName,
+		JSONPath:    profilePath(localName),
+	})
 }
 
 // ── probe ─────────────────────────────────────────────────────────────────────

@@ -431,6 +431,9 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		if p.Isolated {
 			tags = append(tags, "isolated")
 		}
+		if p.Cwd != "" {
+			tags = append(tags, "pinned")
+		}
 		if kinds := profilePluginKinds(loc); len(kinds) > 0 {
 			tags = append(tags, "+"+strings.Join(kinds, "/"))
 		}

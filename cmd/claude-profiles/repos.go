@@ -378,21 +378,43 @@ func resolveProfileLocation(id string) (*ProfileLocation, error) {
 	return nil, fmt.Errorf("profile not found: %s", id)
 }
 
+// isCwdUnder reports whether cwd equals or is nested under pinCwd.
+// Uses filepath.Rel so symlinks / ".." are handled correctly.
+func isCwdUnder(cwd, pinCwd string) bool {
+	if pinCwd == "" {
+		return true
+	}
+	rel, err := filepath.Rel(pinCwd, cwd)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
+}
+
 // listAllLocations returns local + project + repo profiles, sorted with local first.
+// Local profiles that have a _cwd pin are omitted unless the current working
+// directory is equal to or nested under that pin.
 func listAllLocations() ([]ProfileLocation, error) {
 	var out []ProfileLocation
 	localNames, err := listProfiles()
 	if err != nil {
 		return nil, err
 	}
+	cwd, _ := os.Getwd()
 	localSet := make(map[string]bool, len(localNames))
 	for _, n := range localNames {
-		localSet[n] = true
-		out = append(out, ProfileLocation{
+		loc := ProfileLocation{
 			Name:        n,
 			QualifiedID: n,
 			JSONPath:    profilePath(n),
-		})
+		}
+		if p, err := loadProfileAt(loc.JSONPath); err == nil && p.Cwd != "" {
+			if !isCwdUnder(cwd, p.Cwd) {
+				continue
+			}
+		}
+		localSet[n] = true
+		out = append(out, loc)
 	}
 	// Project-local profiles from .claude-profiles/ in/above CWD. When a
 	// user-level local profile shares the same name, both are shown: the

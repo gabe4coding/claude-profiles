@@ -44,6 +44,10 @@ type Profile struct {
 	// the session starts. Selecting one sends it as the initial message;
 	// skipping starts an interactive session with no pre-filled text.
 	Prompts []ProfilePrompt `json:"_prompts,omitempty"`
+	// Cwd, when non-empty, pins this local profile to a specific working directory.
+	// The hub only shows it when os.Getwd() is equal to or under this path.
+	// Set automatically when promoting a repo profile to a local override.
+	Cwd string `json:"_cwd,omitempty"`
 }
 
 // ── Settings (JSON map) helpers ──────────────────────────────────────────────
@@ -163,11 +167,13 @@ func saveProfileAt(dir string, p *Profile) error {
 		Description string          `json:"_description,omitempty"`
 		Isolated    bool            `json:"_isolated,omitempty"`
 		Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
+		Cwd         string          `json:"_cwd,omitempty"`
 	}
 	metaData, err := json.MarshalIndent(profileMeta{
 		Description: p.Description,
 		Isolated:    p.Isolated,
 		Prompts:     p.Prompts,
+		Cwd:         p.Cwd,
 	}, "", "  ")
 	if err != nil {
 		return err
