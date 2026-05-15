@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "fs": {
+      "type": "stdio",
+      "command": "echo",
+      "args": [
+        "mock"
+      ]
+    }
+  }
+}

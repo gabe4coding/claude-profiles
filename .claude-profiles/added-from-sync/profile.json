@@ -1,9 +1,3 @@
 {
-  "_description": "Smoke-test fixture — confirms upstream sync brings new profiles down",
-  "mcpServers": {
-    "x": {
-      "type": "http",
-      "url": "https://example.com"
-    }
-  }
+  "_description": "Smoke-test fixture — confirms upstream sync brings new profiles down"
 }

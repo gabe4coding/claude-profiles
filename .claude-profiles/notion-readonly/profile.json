@@ -1,13 +1,3 @@
 {
-  "_description": "Read-only Notion access — search, fetch, and inspect pages without write permissions",
-  "mcpServers": {
-    "notion": {
-      "type": "http",
-      "url": "https://mcp.notion.com/mcp"
-    }
-  },
-  "_settings": {
-    "model": "haiku",
-    "permissions": { "defaultMode": "auto" }
-  }
+  "_description": "Read-only Notion access — search, fetch, and inspect pages without write permissions"
 }
