@@ -237,6 +237,46 @@ func pickProfile() (string, error) {
 	return selected, nil
 }
 
+// pickPrompt shows a selection list of profile prompts and returns the text of
+// the chosen one. Returns ("", nil) when the user picks "start interactive" or
+// aborts so the caller can treat a blank return as "no initial message."
+func pickPrompt(prompts []ProfilePrompt) (string, error) {
+	if !isTTY() {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "   0) [start interactive — no prompt]")
+		for i, p := range prompts {
+			fmt.Fprintf(os.Stderr, "  %2d) %s\n", i+1, p.Name)
+		}
+		fmt.Fprintln(os.Stderr)
+		raw := promptLine(fmt.Sprintf("Select starting prompt [0-%d]: ", len(prompts)))
+		var n int
+		fmt.Sscanf(strings.TrimSpace(raw), "%d", &n)
+		if n < 0 || n > len(prompts) {
+			return "", fmt.Errorf("invalid selection")
+		}
+		if n == 0 {
+			return "", nil
+		}
+		return prompts[n-1].Text, nil
+	}
+
+	opts := make([]huh.Option[string], len(prompts)+1)
+	opts[0] = huh.NewOption("[start interactive — no prompt]", "")
+	for i, p := range prompts {
+		opts[i+1] = huh.NewOption(p.Name, p.Text)
+	}
+	var selected string
+	err := runField(huh.NewSelect[string]().
+		Title("Select a starting prompt").
+		Options(opts...).
+		Value(&selected))
+	if err != nil {
+		handleAbort(err)
+		return "", err
+	}
+	return selected, nil
+}
+
 // pickBackgroundedSession shows a huh select with all backgrounded sessions
 // for the profile so the user can pick exactly which one to wrapper-resume.
 // Returns nil if the user cancelled or chose "skip".

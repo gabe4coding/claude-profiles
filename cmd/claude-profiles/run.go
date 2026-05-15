@@ -161,6 +161,7 @@ func cmdRun(args []string) {
 	// the conversation as we do after /switch. Flip false after the first
 	// iteration so subsequent /switch relaunches still auto-continue.
 	skipAutoContinue := initialResumeID != ""
+	firstIteration := true
 	for {
 		loc, err := resolveProfileLocation(profile)
 		if err != nil {
@@ -170,6 +171,18 @@ func cmdRun(args []string) {
 		if err != nil {
 			fatal(err)
 		}
+
+		// On the first launch only: if the profile defines prompts and the user
+		// has not already supplied a message, show a picker. Skipped when
+		// resuming (the conversation already has context) or when passThrough
+		// is already set (explicit CLI argument takes precedence).
+		if firstIteration && len(p.Prompts) > 0 && len(passThrough) == 0 && initialResumeID == "" {
+			if chosen, err := pickPrompt(p.Prompts); err == nil && chosen != "" {
+				passThrough = []string{chosen}
+			}
+		}
+		firstIteration = false
+
 		settingsPath := ""
 		if augmented, err := runSettingsWithHook(p, ""); err == nil {
 			settingsPath = augmented

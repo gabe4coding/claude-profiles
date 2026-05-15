@@ -16,6 +16,14 @@ type ServerConfig struct {
 	Args    []string `json:"args,omitempty"`
 }
 
+// ProfilePrompt is a named, ready-to-send message stored in a profile. When a
+// profile defines prompts the wrapper shows a picker before launching so the
+// user can start the session with a pre-filled message instead of typing it.
+type ProfilePrompt struct {
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
 type Profile struct {
 	// Description explains why this profile exists. Shown in the hub list and
 	// in `claude-profiles list`. Optional — empty means "no rationale recorded".
@@ -32,6 +40,10 @@ type Profile struct {
 	// this flag — those require --bare, which would break /switch. Default
 	// is false (profile blends with the user's root configuration as before).
 	Isolated bool `json:"_isolated,omitempty"`
+	// Prompts is an optional list of named messages offered to the user before
+	// the session starts. Selecting one sends it as the initial message;
+	// skipping starts an interactive session with no pre-filled text.
+	Prompts []ProfilePrompt `json:"_prompts,omitempty"`
 }
 
 // ── Settings (JSON map) helpers ──────────────────────────────────────────────
