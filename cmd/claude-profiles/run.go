@@ -346,27 +346,65 @@ func cmdRun(args []string) {
 	}
 }
 
-// snapshotSessionFiles records mtimes of every .jsonl session file in the
-// project dir for the current cwd. Used as a "before" snapshot so we can find
-// the session this claude invocation creates.
+// snapshotSessionFiles records mtimes of every .jsonl session file across all
+// session dirs for the current cwd — including worktree subdirs. When claude
+// runs with --worktree it shifts its CWD into .claude/worktrees/<name>/ and
+// writes sessions to the corresponding encoded dir, which differs from the
+// wrapper's own CWD dir. sessionDirsToWatch covers both.
 func snapshotSessionFiles() map[string]int64 {
-	dir := projectSessionsDir()
-	if dir == "" {
-		return nil
+	out := map[string]int64{}
+	for _, dir := range sessionDirsToWatch() {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".jsonl") {
+				continue
+			}
+			info, _ := e.Info()
+			out[e.Name()] = info.ModTime().UnixNano()
+		}
 	}
-	entries, err := os.ReadDir(dir)
+	return out
+}
+
+// sessionDirsToWatch returns all ~/.claude/projects/ subdirs that could receive
+// session files for the current CWD. It always includes the main encoded dir,
+// plus any worktree dirs (pattern: <main-encoded>--claude-worktrees-<name>)
+// that already exist on disk. The before-snapshot won't include a worktree dir
+// that hasn't been created yet — that's fine: new files in it will naturally
+// appear as "new" in the after-snapshot.
+func sessionDirsToWatch() []string {
+	cwd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
-	out := map[string]int64{}
+	mainDir := encodedSessionsDir(cwd)
+	mainEncoded := filepath.Base(mainDir)
+	projectsRoot := filepath.Dir(mainDir)
+
+	entries, err := os.ReadDir(projectsRoot)
+	if err != nil {
+		return []string{mainDir}
+	}
+
+	// Worktree dirs encode as "<main>--claude-worktrees-<name>" because
+	// /.claude/worktrees/ → "--claude-worktrees-" after / and . replacement.
+	worktreePrefix := mainEncoded + "--claude-worktrees-"
+	var dirs []string
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
+		if !e.IsDir() {
 			continue
 		}
-		info, _ := e.Info()
-		out[e.Name()] = info.ModTime().UnixNano()
+		if e.Name() == mainEncoded || strings.HasPrefix(e.Name(), worktreePrefix) {
+			dirs = append(dirs, filepath.Join(projectsRoot, e.Name()))
+		}
 	}
-	return out
+	if len(dirs) == 0 {
+		return []string{mainDir}
+	}
+	return dirs
 }
 
 // findNewOrUpdatedSession returns the session ID of the most-recently-modified
