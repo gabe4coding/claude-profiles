@@ -285,19 +285,36 @@ func profilePluginKinds(loc ProfileLocation) []string {
 	return out
 }
 
+// isProfileDir reports whether dir contains enough content to be treated as a
+// profile: a profile.json, a .mcp.json, or a .claude-plugin/plugin.json.
+func isProfileDir(dir string) bool {
+	for _, rel := range []string{"profile.json", ".mcp.json", filepath.Join(".claude-plugin", "plugin.json")} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // loadProfileAt reads a profile from path (must point at profile.json). Supports
 // both the split format (profile.json + .mcp.json + settings.json) and the old
 // combined format (everything inline in profile.json). Falls back to combined
 // format when .mcp.json is absent — covers repo profiles, project profiles, and
 // un-migrated local profiles.
+//
+// profile.json is optional: when absent the returned Profile carries zero-value
+// metadata (_description, _isolated, _prompts) while still loading .mcp.json
+// and settings.json from the same directory.
 func loadProfileAt(path string) (*Profile, error) {
+	var p Profile
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	var p Profile
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
+	if err == nil {
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, err
+		}
 	}
 
 	dir := filepath.Dir(path)

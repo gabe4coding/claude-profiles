@@ -267,14 +267,14 @@ func listCwdProfileLocations() []ProfileLocation {
 			continue
 		}
 		name := e.Name()
-		jsonPath := filepath.Join(root, name, "profile.json")
-		if _, err := os.Stat(jsonPath); err != nil {
+		dir := filepath.Join(root, name)
+		if !isProfileDir(dir) {
 			continue
 		}
 		out = append(out, ProfileLocation{
 			Name:        name,
 			QualifiedID: name,
-			JSONPath:    jsonPath,
+			JSONPath:    filepath.Join(dir, "profile.json"),
 			RepoAlias:   ".",
 		})
 	}
@@ -306,14 +306,14 @@ func listRepoProfiles() []ProfileLocation {
 				continue
 			}
 			name := e.Name()
-			jsonPath := filepath.Join(root, name, "profile.json")
-			if _, err := os.Stat(jsonPath); err != nil {
+			dir := filepath.Join(root, name)
+			if !isProfileDir(dir) {
 				continue
 			}
 			out = append(out, ProfileLocation{
 				Name:        name,
 				QualifiedID: r.Alias + "/" + name,
-				JSONPath:    jsonPath,
+				JSONPath:    filepath.Join(dir, "profile.json"),
 				RepoAlias:   r.Alias,
 			})
 		}
