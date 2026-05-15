@@ -14,19 +14,69 @@ import (
 
 const contextWindowLimit = 200_000 // tokens — all current Claude models
 
+// modelPrices holds per-million-token prices: [input, output, cacheWrite, cacheRead].
+// Matched by prefix: "opus" → opus tier, "haiku" → haiku tier, else → sonnet tier.
+var modelPrices = map[string][4]float64{
+	"sonnet": {3.00, 15.00, 3.75, 0.30},
+	"opus":   {15.00, 75.00, 18.75, 1.50},
+	"haiku":  {0.80, 4.00, 1.00, 0.08},
+}
+
+func priceTier(model string) string {
+	switch {
+	case strings.Contains(model, "opus"):
+		return "opus"
+	case strings.Contains(model, "haiku"):
+		return "haiku"
+	default:
+		return "sonnet"
+	}
+}
+
+func tokenCost(tier string, input, output, cacheCreate, cacheRead int) float64 {
+	p := modelPrices[tier]
+	const M = 1_000_000.0
+	return (float64(input)*p[0] + float64(output)*p[1] +
+		float64(cacheCreate)*p[2] + float64(cacheRead)*p[3]) / M
+}
+
+// modelUsage tracks per-model token counts within a session.
+type modelUsage struct {
+	Turns       int
+	Input       int
+	Output      int
+	CacheCreate int
+	CacheRead   int
+}
+
+func (m *modelUsage) cost(model string) float64 {
+	return tokenCost(priceTier(model), m.Input, m.Output, m.CacheCreate, m.CacheRead)
+}
+
 // sessionMetrics holds derived stats for a single session file.
 type sessionMetrics struct {
 	SessionID        string
 	Cwd              string
 	Profile          string // qualified id, or "(no profile)"
 	Project          string // base name of cwd
-	TurnCount        int    // main-chain assistant turns only
+	TurnCount        int    // main-chain assistant turns (deduped by requestId)
 	TotalInput       int
 	TotalOutput      int
 	TotalCacheRead   int
 	TotalCacheCreate int
 	PeakContext      int // max(input+cache_read+cache_create) across turns
 	ToolCallCount    int
+	SysPromptTokens  int // first turn's cache_read — pre-existing system cache
+	FirstTurnCtx     int // first turn's total context (system prompt + initial content)
+	ModelUsage       map[string]*modelUsage
+}
+
+func (s *sessionMetrics) totalCost() float64 {
+	var total float64
+	for model, u := range s.ModelUsage {
+		total += u.cost(model)
+	}
+	return total
 }
 
 func (s sessionMetrics) cacheHitRatio() float64 {
@@ -41,22 +91,43 @@ func (s sessionMetrics) peakPercent() float64 {
 	return float64(s.PeakContext) / float64(contextWindowLimit) * 100
 }
 
+// sysPct is the system prompt's share of peak context.
+func (s sessionMetrics) sysPct() int {
+	if s.PeakContext == 0 {
+		return 0
+	}
+	return int(float64(s.SysPromptTokens) / float64(s.PeakContext) * 100)
+}
+
+// growthPct is the share of peak context added by conversation/tool accumulation
+// (everything beyond the first turn's initial context load).
+func (s sessionMetrics) growthPct() int {
+	if s.PeakContext == 0 || s.FirstTurnCtx >= s.PeakContext {
+		return 0
+	}
+	return int(float64(s.PeakContext-s.FirstTurnCtx) / float64(s.PeakContext) * 100)
+}
+
 type analyticsRawEvent struct {
-	Type        string `json:"type"`
-	IsSidechain bool   `json:"isSidechain"`
-	Cwd         string `json:"cwd"`
-	SessionID   string `json:"sessionId"`
-	Message     struct {
-		Usage struct {
-			InputTokens              int `json:"input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-		} `json:"usage"`
-		Content []struct {
-			Type string `json:"type"`
-		} `json:"content"`
-	} `json:"message"`
+	Type        string    `json:"type"`
+	IsSidechain bool      `json:"isSidechain"`
+	Cwd         string    `json:"cwd"`
+	SessionID   string    `json:"sessionId"`
+	RequestID   string    `json:"requestId"`
+	Message     rawMessage `json:"message"`
+}
+
+type rawMessage struct {
+	Model string `json:"model"`
+	Usage struct {
+		InputTokens              int `json:"input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+	} `json:"usage"`
+	Content []struct {
+		Type string `json:"type"`
+	} `json:"content"`
 }
 
 func parseSessionFile(path string) *sessionMetrics {
@@ -69,7 +140,10 @@ func parseSessionFile(path string) *sessionMetrics {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1<<20), 1<<26)
 
-	m := &sessionMetrics{}
+	m := &sessionMetrics{ModelUsage: map[string]*modelUsage{}}
+	seenReqIDs := map[string]bool{}
+	firstTurn := true
+
 	for scanner.Scan() {
 		var ev analyticsRawEvent
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
@@ -86,22 +160,55 @@ func parseSessionFile(path string) *sessionMetrics {
 		if ev.Type != "assistant" || ev.IsSidechain {
 			continue
 		}
+		// Deduplicate: Claude Code writes multiple identical events per API
+		// request (streaming chunks share the same requestId and final usage).
+		if ev.RequestID != "" {
+			if seenReqIDs[ev.RequestID] {
+				continue
+			}
+			seenReqIDs[ev.RequestID] = true
+		}
+
 		u := ev.Message.Usage
 		contextAtTurn := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+
+		if firstTurn {
+			m.SysPromptTokens = u.CacheReadInputTokens // pre-existing cache = system prompt
+			m.FirstTurnCtx = contextAtTurn
+			firstTurn = false
+		}
 		if contextAtTurn > m.PeakContext {
 			m.PeakContext = contextAtTurn
 		}
+
 		m.TotalInput += u.InputTokens
 		m.TotalOutput += u.OutputTokens
 		m.TotalCacheRead += u.CacheReadInputTokens
 		m.TotalCacheCreate += u.CacheCreationInputTokens
 		m.TurnCount++
+
 		for _, c := range ev.Message.Content {
 			if c.Type == "tool_use" {
 				m.ToolCallCount++
 			}
 		}
+
+		model := ev.Message.Model
+		if model == "" {
+			model = "unknown"
+		}
+		mu := m.ModelUsage[model]
+		if mu == nil {
+			mu = &modelUsage{}
+			m.ModelUsage[model] = mu
+		}
+		mu.Turns++
+		mu.Input += u.InputTokens
+		mu.Output += u.OutputTokens
+		mu.CacheCreate += u.CacheCreationInputTokens
+		mu.CacheRead += u.CacheReadInputTokens
 	}
+
 	if m.SessionID == "" || m.TurnCount == 0 {
 		return nil
 	}
@@ -148,7 +255,6 @@ func cmdAnalytics(_ []string) {
 		return
 	}
 
-	// Sort by peak context descending for the top-sessions table.
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].PeakContext > sessions[j].PeakContext
 	})
@@ -156,20 +262,106 @@ func cmdAnalytics(_ []string) {
 	sepStyle := lipgloss.NewStyle().Foreground(cdsMuted)
 	boldStyle := lipgloss.NewStyle().Bold(true)
 	amberStyle := lipgloss.NewStyle().Foreground(cdsAmber)
+	dimStyle := lipgloss.NewStyle().Foreground(cdsMuted)
 
-	sep := func() { fmt.Fprintln(os.Stderr, sepStyle.Render(strings.Repeat("─", 72))) }
+	sep := func() { fmt.Fprintln(os.Stderr, sepStyle.Render(strings.Repeat("─", 76))) }
+	dot := func() { fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 72))) }
 
 	fmt.Fprintln(os.Stderr)
 	title("=== Context Window Analytics ===")
-	fmt.Fprintf(os.Stderr, "\n%s\n\n", styleInfo.Render(fmt.Sprintf("Scanned %d sessions across %d project(s)", len(sessions), countProjects(sessions))))
+	fmt.Fprintf(os.Stderr, "\n%s\n\n", styleInfo.Render(
+		fmt.Sprintf("Scanned %d sessions across %d project(s)", len(sessions), countProjects(sessions))))
 
-	// ── Top Heavy Sessions ────────────────────────────────────────────────
+	// ── Project Overview ──────────────────────────────────────────────────
 
+	// Aggregate global and per-model totals.
+	type globalStats struct {
+		Sessions    int
+		TotalInput  int
+		TotalOutput int
+		CacheCreate int
+		CacheRead   int
+	}
+	global := globalStats{}
+	modelGlobal := map[string]*modelUsage{} // model id → totals across all sessions
+
+	for i := range sessions {
+		s := &sessions[i]
+		global.Sessions++
+		global.TotalInput += s.TotalInput
+		global.TotalOutput += s.TotalOutput
+		global.CacheCreate += s.TotalCacheCreate
+		global.CacheRead += s.TotalCacheRead
+		for model, mu := range s.ModelUsage {
+			g := modelGlobal[model]
+			if g == nil {
+				g = &modelUsage{}
+				modelGlobal[model] = g
+			}
+			g.Turns += mu.Turns
+			g.Input += mu.Input
+			g.Output += mu.Output
+			g.CacheCreate += mu.CacheCreate
+			g.CacheRead += mu.CacheRead
+		}
+	}
+
+	totalCost := 0.0
+	for model, mu := range modelGlobal {
+		totalCost += mu.cost(model)
+	}
+	totalTurns := 0
+	for _, mu := range modelGlobal {
+		totalTurns += mu.Turns
+	}
+
+	// Sort models by turn count descending.
+	type modelEntry struct {
+		Model string
+		*modelUsage
+	}
+	var modelList []modelEntry
+	for k, v := range modelGlobal {
+		modelList = append(modelList, modelEntry{k, v})
+	}
+	sort.Slice(modelList, func(i, j int) bool {
+		return modelList[i].Turns > modelList[j].Turns
+	})
+
+	fmt.Fprintln(os.Stderr, boldStyle.Render("Project Overview"))
+	sep()
+	fmt.Fprintf(os.Stderr, "  %s  %s in · %s out   Est. cost: %s %s\n\n",
+		boldStyle.Render(fmt.Sprintf("%d sessions", global.Sessions)),
+		formatTokens(global.TotalInput+global.CacheRead+global.CacheCreate),
+		formatTokens(global.TotalOutput),
+		styleTitle.Render(fmt.Sprintf("$%.2f", totalCost)),
+		dimStyle.Render("(calculated from tokens × Anthropic list prices)"))
+
+	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Render("Model distribution (by turns)"))
+	dot()
+	fmt.Fprintf(os.Stderr, "  %-30s %7s  %6s  %10s\n", "Model", "Turns", "Share", "Est. Cost")
+	dot()
+	for _, me := range modelList {
+		pct := 0.0
+		if totalTurns > 0 {
+			pct = float64(me.Turns) / float64(totalTurns) * 100
+		}
+		cost := me.cost(me.Model)
+		fmt.Fprintf(os.Stderr, "  %-30s %7d  %5.1f%%  %10s\n",
+			truncate(me.Model, 28),
+			me.Turns,
+			pct,
+			fmt.Sprintf("$%.2f", cost))
+	}
+
+	// ── Top Sessions by Peak Context ──────────────────────────────────────
+
+	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Top Sessions by Peak Context"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %-10s %-22s %-22s %-18s %-7s %s\n",
-		"Session", "Profile", "Project", "Peak Context", "Cache", "Turns")
-	fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 68)))
+	fmt.Fprintf(os.Stderr, "  %-10s %-20s %-16s %-17s %-6s %-5s %-7s %s\n",
+		"Session", "Profile", "Project", "Peak Context", "Cache", "Sys%", "Conv%", "Turns")
+	dot()
 
 	limit := 10
 	if len(sessions) < limit {
@@ -187,13 +379,27 @@ func cmdAnalytics(_ []string) {
 		default:
 			peakColored = peakStr
 		}
-		cacheStr := fmt.Sprintf("%d%%", int(s.cacheHitRatio()*100))
-		fmt.Fprintf(os.Stderr, "  %s  %-22s %-22s %s%-7s %d\n",
+
+		sysPctVal := s.sysPct()
+		sysPctStr := fmt.Sprintf("%d%%", sysPctVal)
+		var sysPctColored string
+		switch {
+		case sysPctVal >= 30:
+			sysPctColored = styleWarn.Render(sysPctStr)
+		case sysPctVal >= 15:
+			sysPctColored = amberStyle.Render(sysPctStr)
+		default:
+			sysPctColored = dimStyle.Render(sysPctStr)
+		}
+
+		fmt.Fprintf(os.Stderr, "  %s  %-20s %-16s %s%-6s %s  %-7s %d\n",
 			shortID(s.SessionID),
-			truncate(s.Profile, 20),
-			truncate(s.Project, 20),
-			ansiPad(peakColored, 18),
-			cacheStr,
+			truncate(s.Profile, 18),
+			truncate(s.Project, 14),
+			ansiPad(peakColored, 17),
+			fmt.Sprintf("%d%%", int(s.cacheHitRatio()*100)),
+			ansiPad(sysPctColored, 5),
+			fmt.Sprintf("%d%%", s.growthPct()),
 			s.TurnCount)
 	}
 
@@ -205,9 +411,11 @@ func cmdAnalytics(_ []string) {
 		TotalCacheCreate int
 		PeakSum          int
 		MaxPeak          int
+		TotalCost        float64
 	}
 	profileMap := map[string]*profileStats{}
-	for _, s := range sessions {
+	for i := range sessions {
+		s := &sessions[i]
 		ps := profileMap[s.Profile]
 		if ps == nil {
 			ps = &profileStats{}
@@ -220,6 +428,7 @@ func cmdAnalytics(_ []string) {
 		if s.PeakContext > ps.MaxPeak {
 			ps.MaxPeak = s.PeakContext
 		}
+		ps.TotalCost += s.totalCost()
 	}
 	type profileEntry struct {
 		Profile string
@@ -236,9 +445,9 @@ func cmdAnalytics(_ []string) {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Per-Profile Cache Efficiency"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %-26s %8s %10s %10s %-10s\n",
-		"Profile", "Sessions", "Avg Peak", "Max Peak", "Cache Hit")
-	fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 68)))
+	fmt.Fprintf(os.Stderr, "  %-24s %8s %10s %10s %-10s %10s\n",
+		"Profile", "Sessions", "Avg Peak", "Max Peak", "Cache Hit", "Est. Cost")
+	dot()
 
 	for _, p := range profileList {
 		avgPeak := 0
@@ -260,70 +469,13 @@ func cmdAnalytics(_ []string) {
 		default:
 			hitColored = styleSuccess.Render(hitStr)
 		}
-		fmt.Fprintf(os.Stderr, "  %-26s %8d %10s %10s %s\n",
-			truncate(p.Profile, 24),
+		fmt.Fprintf(os.Stderr, "  %-24s %8d %10s %10s %s %10s\n",
+			truncate(p.Profile, 22),
 			p.Sessions,
 			fmt.Sprintf("%dk", avgPeak/1000),
 			fmt.Sprintf("%dk", p.MaxPeak/1000),
-			ansiPad(hitColored, 10))
-	}
-
-	// ── Per-Project Totals ────────────────────────────────────────────────
-
-	type projectStats struct {
-		Sessions      int
-		TotalOutput   int
-		PeakSum       int
-		HeavySessions int
-	}
-	projectMap := map[string]*projectStats{}
-	for _, s := range sessions {
-		ps := projectMap[s.Project]
-		if ps == nil {
-			ps = &projectStats{}
-			projectMap[s.Project] = ps
-		}
-		ps.Sessions++
-		ps.TotalOutput += s.TotalOutput
-		ps.PeakSum += s.PeakContext
-		if s.peakPercent() >= 80 {
-			ps.HeavySessions++
-		}
-	}
-	type projectEntry struct {
-		Project string
-		*projectStats
-	}
-	var projectList []projectEntry
-	for k, v := range projectMap {
-		projectList = append(projectList, projectEntry{k, v})
-	}
-	sort.Slice(projectList, func(i, j int) bool {
-		return projectList[i].Sessions > projectList[j].Sessions
-	})
-
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, boldStyle.Render("Per-Project Totals"))
-	sep()
-	fmt.Fprintf(os.Stderr, "  %-26s %8s %13s %10s %-11s\n",
-		"Project", "Sessions", "Total Output", "Avg Peak", "Heavy(>80%)")
-	fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 68)))
-
-	for _, p := range projectList {
-		avgPeak := 0
-		if p.Sessions > 0 {
-			avgPeak = p.PeakSum / p.Sessions
-		}
-		heavyStr := fmt.Sprintf("%d", p.HeavySessions)
-		if p.HeavySessions > 0 {
-			heavyStr = styleWarn.Render(heavyStr)
-		}
-		fmt.Fprintf(os.Stderr, "  %-26s %8d %13s %10s %s\n",
-			truncate(p.Project, 24),
-			p.Sessions,
-			fmt.Sprintf("%dk", p.TotalOutput/1000),
-			fmt.Sprintf("%dk", avgPeak/1000),
-			ansiPad(heavyStr, 11))
+			ansiPad(hitColored, 10),
+			fmt.Sprintf("$%.2f", p.TotalCost))
 	}
 
 	// ── Recommendations ───────────────────────────────────────────────────
@@ -368,11 +520,36 @@ func cmdAnalytics(_ []string) {
 		hasRecs = true
 	}
 
+	// Flag sessions where system prompt dominates — only meaningful when the
+	// session ran long enough that the system prompt isn't just the initial setup.
+	bloatedSys := 0
+	for _, s := range sessions {
+		if s.sysPct() >= 30 && s.TurnCount >= 5 && s.PeakContext > 30_000 {
+			bloatedSys++
+		}
+	}
+	if bloatedSys > 0 {
+		warn("  %d session(s) have system prompt >30%% of peak context — review CLAUDE.md / hook output size", bloatedSys)
+		hasRecs = true
+	}
+
 	if !hasRecs {
 		success("  All sessions look healthy.")
 	}
 
 	fmt.Fprintln(os.Stderr)
+}
+
+// formatTokens prints a token count in human-readable form (k / M).
+func formatTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // ansiPad right-pads s to width visual columns, accounting for ANSI escape
