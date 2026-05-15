@@ -172,6 +172,19 @@ func cmdRun(args []string) {
 			fatal(err)
 		}
 
+		// On first launch: if the profile wants a worktree and we're already
+		// inside a tmux session, open a new tmux window so the worktree session
+		// gets its own pane while the full wrapper lifecycle stays intact inside
+		// the new window. The guard env var prevents the new window from
+		// recursing back into this branch.
+		if firstIteration && p.Worktree && tmuxAvailable() &&
+			os.Getenv("TMUX") != "" && os.Getenv("CLAUDE_PROFILES_WORKTREE_WINDOW") == "" {
+			if openWorktreeWindow(profile, passThrough, initialResumeID) {
+				return
+			}
+			// fall through: window creation failed, run in current pane
+		}
+
 		// On the first launch only: if the profile defines prompts and the user
 		// has not already supplied a message, show a picker. Skipped when
 		// resuming (the conversation already has context) or when passThrough
@@ -529,6 +542,46 @@ func pollForSessionID(before map[string]int64, w *RunningWrapper, done <-chan st
 			return
 		}
 	}
+}
+
+// openWorktreeWindow opens a new tmux window in the current session running
+// this profile's wrapper with CLAUDE_PROFILES_WORKTREE_WINDOW=1, which prevents
+// the new window from recursing into this function. The current window exits
+// (tmux auto-focuses the new one), keeping the full wrapper lifecycle intact
+// inside the new window. Returns true when the window was opened successfully.
+func openWorktreeWindow(profile string, passThrough []string, resumeID string) bool {
+	self, err := os.Executable()
+	if err != nil {
+		warn("cannot locate own binary for worktree window: %v", err)
+		return false
+	}
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return false
+	}
+
+	// Build the inner shell command: CLAUDE_PROFILES_WORKTREE_WINDOW=1 <self> run <profile> [--resume <id>] [-- args]
+	parts := []string{shellQuote(self), "run", shellQuote(profile)}
+	if resumeID != "" {
+		parts = append(parts, "--resume", shellQuote(resumeID))
+	}
+	if len(passThrough) > 0 {
+		parts = append(parts, "--")
+		for _, pt := range passThrough {
+			parts = append(parts, shellQuote(pt))
+		}
+	}
+	innerCmd := "CLAUDE_PROFILES_WORKTREE_WINDOW=1 " + strings.Join(parts, " ")
+
+	// Window name mirrors the tmux session naming convention.
+	windowName := strings.NewReplacer("/", "-", ".", "-", ":", "-").Replace(profile)
+
+	if err := exec.Command(tmuxBin, "new-window", "-n", windowName, innerCmd).Run(); err != nil {
+		warn("Failed to open new tmux window for worktree: %v", err)
+		return false
+	}
+	info("↳ worktree session opened in new tmux window")
+	return true
 }
 
 func shortSession(id string) string {
