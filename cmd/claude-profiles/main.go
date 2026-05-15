@@ -574,7 +574,10 @@ func cmdDelete(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	if loc.RepoAlias != "" && loc.RepoAlias != "." {
+	if loc.RepoAlias == "." {
+		fatal(fmt.Errorf("project profiles can't be deleted from here — remove .claude-profiles/%s/ from your repo", loc.Name))
+	}
+	if loc.RepoAlias != "" {
 		fatal(fmt.Errorf("repo profiles can't be deleted from here — manage them in the source repo"))
 	}
 	if !confirm(fmt.Sprintf("Delete %q?", loc.QualifiedID)) {
