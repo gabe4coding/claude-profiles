@@ -58,6 +58,12 @@ func migrateLegacyLayout() {
 	// Rename the wrapper-owned plugin from its earlier "wrapper-plugin" name to
 	// "claude-profiles" so the slash command's namespace matches the CLI name.
 	moveIfPresent(filepath.Join(root, "wrapper-plugin"), wrapperPluginPath())
+
+	// Convert local profiles from the old combined profile.json format to the
+	// native split format (.mcp.json + settings.json + slim profile.json).
+	// Only touches profilesDirPath() — project profiles are git-tracked and
+	// must not be auto-mutated.
+	migrateProfilesToSplitFormat()
 }
 
 // moveIfPresent moves src→dst only if src exists and dst does not (so a
@@ -153,5 +159,45 @@ func migrateProfiles(srcDir, dstDir string) {
 	if migrated > 0 {
 		fmt.Fprintf(os.Stderr, "[claude-profiles] migrated %d profile(s) from %s to %s\n",
 			migrated, srcDir, dstDir)
+	}
+}
+
+// migrateProfilesToSplitFormat converts local user profiles from the old
+// combined profile.json format to the native split format:
+//
+//	profile.json  — metadata only
+//	.mcp.json     — MCP server configs
+//	settings.json — Claude Code settings
+//
+// Idempotent: skips any profile whose directory already contains .mcp.json.
+// Only touches profilesDirPath() — project profiles are git-tracked and must
+// not be auto-mutated.
+func migrateProfilesToSplitFormat() {
+	dstDir := profilesDirPath()
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		return
+	}
+	migrated := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		profileDir := filepath.Join(dstDir, e.Name())
+		if _, err := os.Stat(filepath.Join(profileDir, ".mcp.json")); err == nil {
+			continue // already in split format
+		}
+		jsonPath := filepath.Join(profileDir, "profile.json")
+		p, err := loadProfileAt(jsonPath)
+		if err != nil {
+			continue
+		}
+		if err := saveProfileAt(profileDir, p); err != nil {
+			continue
+		}
+		migrated++
+	}
+	if migrated > 0 {
+		fmt.Fprintf(os.Stderr, "[claude-profiles] converted %d profile(s) to native Claude Code format\n", migrated)
 	}
 }

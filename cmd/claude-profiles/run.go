@@ -170,18 +170,18 @@ func cmdRun(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		// Settings always live inline in profile.Settings now. Augment with
-		// the SessionStart hook (which briefs the agent on /switch + the
-		// available-profile list) and pass it to claude via a temp file.
 		settingsPath := ""
 		if augmented, err := runSettingsWithHook(p, ""); err == nil {
 			settingsPath = augmented
-			// Clear inline _settings on the in-memory profile so claudeFlags
-			// picks up the file path and doesn't double-emit --settings.
-			p.Settings = nil
 		}
 
-		claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", loc.JSONPath}
+		// Use .mcp.json when present (split format); fall back to profile.json
+		// for old combined format, repo profiles, and project profiles.
+		mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+		if _, err := os.Stat(mcpConfigPath); err != nil {
+			mcpConfigPath = loc.JSONPath
+		}
+		claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 		claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
 		// Always load the wrapper-plugin so /switch survives --setting-sources=
 		// in isolated mode. The plugin is a tiny dir containing commands/

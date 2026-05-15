@@ -186,7 +186,7 @@ func checkProfile(loc ProfileLocation) docCheck {
 	if len(p.Settings) > 0 {
 		var probe any
 		if err := json.Unmarshal(p.Settings, &probe); err != nil {
-			return docCheck{name, "fail", "_settings is not valid JSON: " + err.Error()}
+			return docCheck{name, "fail", "settings.json is not valid JSON: " + err.Error()}
 		}
 		bits = append(bits, "settings")
 	}

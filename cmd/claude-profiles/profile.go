@@ -133,23 +133,78 @@ func listProfiles() ([]string, error) {
 }
 
 func loadProfile(name string) (*Profile, error) {
-	data, err := os.ReadFile(profilePath(name))
-	if err != nil {
-		return nil, err
-	}
-	var p Profile
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	if p.McpServers == nil {
-		p.McpServers = map[string]ServerConfig{}
-	}
-	return &p, nil
+	return loadProfileAt(profilePath(name))
 }
 
-// saveProjectProfile writes a profile to .claude-profiles/<name>/profile.json
-// in (or above) the current working directory. Creates the directory if absent.
-// Returns the absolute path of the written file.
+// saveProfileAt writes a profile in split format to dir:
+//   - profile.json  — metadata only (_description, _isolated)
+//   - .mcp.json     — MCP server configs
+//   - settings.json — Claude Code settings; DeniedTools is authoritative for
+//                     permissions.deny (overwrites any existing deny list)
+func saveProfileAt(dir string, p *Profile) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	// profile.json — metadata only
+	type profileMeta struct {
+		Description string `json:"_description,omitempty"`
+		Isolated    bool   `json:"_isolated,omitempty"`
+	}
+	metaData, err := json.MarshalIndent(profileMeta{Description: p.Description, Isolated: p.Isolated}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profile.json"), append(metaData, '\n'), 0o644); err != nil {
+		return err
+	}
+
+	// .mcp.json — MCP server configs
+	servers := p.McpServers
+	if servers == nil {
+		servers = map[string]ServerConfig{}
+	}
+	mcpData, err := json.MarshalIndent(map[string]any{"mcpServers": servers}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), append(mcpData, '\n'), 0o644); err != nil {
+		return err
+	}
+
+	// settings.json — settings with DeniedTools as authoritative permissions.deny
+	s := parseSettings(p.Settings)
+	perms, _ := s["permissions"].(map[string]any)
+	if len(p.DeniedTools) > 0 {
+		if perms == nil {
+			perms = map[string]any{}
+		}
+		perms["deny"] = p.DeniedTools
+		s["permissions"] = perms
+	} else if perms != nil {
+		delete(perms, "deny")
+		if len(perms) == 0 {
+			delete(s, "permissions")
+		}
+	}
+	settingsPath := filepath.Join(dir, "settings.json")
+	if len(s) > 0 {
+		settingsData, err := json.MarshalIndent(s, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(settingsPath, append(settingsData, '\n'), 0o644); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Remove(settingsPath)
+	}
+	return nil
+}
+
+// saveProjectProfile writes a profile to .claude-profiles/<name>/ in (or
+// above) the current working directory. Returns the absolute path of
+// profile.json. Creates the directory if absent.
 func saveProjectProfile(name string, p *Profile) (string, error) {
 	root := findCwdProfilesDir()
 	if root == "" {
@@ -160,31 +215,15 @@ func saveProjectProfile(name string, p *Profile) (string, error) {
 		root = filepath.Join(cwd, reposProfileDir)
 	}
 	dir := filepath.Join(root, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := saveProfileAt(dir, p); err != nil {
 		return "", err
 	}
-	data, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	dst := filepath.Join(dir, "profile.json")
-	return dst, os.WriteFile(dst, append(data, '\n'), 0o644)
+	return filepath.Join(dir, "profile.json"), nil
 }
 
-// saveProfile writes a local profile to <profilesDir>/<name>/profile.json with
-// every field — including _settings — inline. Folder-only format keeps room
-// for future per-profile artifacts (CLAUDE.md, hooks, …) without changing the
-// loader.
+// saveProfile writes a local profile to <profilesDir>/<name>/ in split format.
 func saveProfile(name string, p *Profile) error {
-	dir := filepath.Join(profilesDir(), name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "profile.json"), append(data, '\n'), 0o644)
+	return saveProfileAt(filepath.Join(profilesDir(), name), p)
 }
 
 func profileExists(name string) bool {
@@ -223,8 +262,11 @@ func profilePluginKinds(loc ProfileLocation) []string {
 	return out
 }
 
-// loadProfileAt reads a unified profile JSON from any absolute path. The
-// caller is responsible for pointing at a profile.json (we don't auto-glob).
+// loadProfileAt reads a profile from path (must point at profile.json). Supports
+// both the split format (profile.json + .mcp.json + settings.json) and the old
+// combined format (everything inline in profile.json). Falls back to combined
+// format when .mcp.json is absent — covers repo profiles, project profiles, and
+// un-migrated local profiles.
 func loadProfileAt(path string) (*Profile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -234,6 +276,48 @@ func loadProfileAt(path string) (*Profile, error) {
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, err
 	}
+
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
+		// Split format: .mcp.json holds servers; settings.json holds settings.
+		var mcpFile struct {
+			McpServers map[string]ServerConfig `json:"mcpServers"`
+		}
+		if raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json")); err == nil {
+			_ = json.Unmarshal(raw, &mcpFile)
+		}
+		p.McpServers = mcpFile.McpServers
+
+		if raw, err := os.ReadFile(filepath.Join(dir, "settings.json")); err == nil {
+			p.Settings = raw
+			var s map[string]any
+			if json.Unmarshal(raw, &s) == nil {
+				if perms, ok := s["permissions"].(map[string]any); ok {
+					if deny, ok := perms["deny"].([]any); ok {
+						p.DeniedTools = make([]string, 0, len(deny))
+						for _, d := range deny {
+							if str, ok := d.(string); ok {
+								p.DeniedTools = append(p.DeniedTools, str)
+							}
+						}
+					}
+				}
+			}
+		}
+	} else if len(p.DeniedTools) > 0 {
+		// Old combined format: synthesize permissions.deny into Settings so
+		// claudeFlags doesn't need --disallowedTools.
+		s := parseSettings(p.Settings)
+		if perms, _ := s["permissions"].(map[string]any); perms == nil || perms["deny"] == nil {
+			if perms == nil {
+				perms = map[string]any{}
+			}
+			perms["deny"] = p.DeniedTools
+			s["permissions"] = perms
+			p.Settings = marshalSettings(s)
+		}
+	}
+
 	if p.McpServers == nil {
 		p.McpServers = map[string]ServerConfig{}
 	}
@@ -241,21 +325,13 @@ func loadProfileAt(path string) (*Profile, error) {
 }
 
 // claudeFlags returns CLI flags derived from the profile.
-//   - --disallowedTools  from DeniedTools
 //   - --settings         augmented JSON written by SessionStart hook, or
-//                        inline Settings JSON straight from the profile.
+//                        inline Settings JSON from the profile. Denied tools
+//                        live in settings.json as permissions.deny.
 //   - --setting-sources= when Isolated, so claude loads NO user/project/local
 //                        settings — only the explicit --settings file applies.
-//                        (Plugins, slash commands, agents, and CLAUDE.md are
-//                        unaffected; --bare would be needed to strip those
-//                        too, but it disables hooks and would break /switch.)
-//
-// model and permission mode live inside Settings now, so no separate flags.
 func claudeFlags(p *Profile, settingsPath string) []string {
 	var args []string
-	if len(p.DeniedTools) > 0 {
-		args = append(args, "--disallowedTools", strings.Join(p.DeniedTools, ","))
-	}
 	switch {
 	case settingsPath != "":
 		args = append(args, "--settings", settingsPath)

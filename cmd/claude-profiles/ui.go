@@ -637,7 +637,7 @@ func pickEditAction(name string, p *Profile) string {
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(pluginLabel, "plugin"),
-			huh.NewOption("Open profile.json in $EDITOR", "editor"),
+			huh.NewOption("Open profile folder in $EDITOR", "editor"),
 			huh.NewOption("Done", "done"),
 		).
 		Value(&action))

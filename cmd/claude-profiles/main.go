@@ -376,7 +376,7 @@ func openProfileInEditor(name string) {
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, profilePath(name))
+	cmd := exec.Command(editor, filepath.Join(profilesDir(), name))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -585,8 +585,8 @@ func cmdImport(args []string) {
 		fatal(err)
 	}
 	var p Profile
-	if err := json.Unmarshal(data, &p); err != nil || p.McpServers == nil {
-		fatal(fmt.Errorf("invalid profile: missing or malformed mcpServers"))
+	if err := json.Unmarshal(data, &p); err != nil {
+		fatal(fmt.Errorf("invalid profile JSON: %v", err))
 	}
 
 	defaultName := strings.TrimSuffix(fileBase(src), ".json")
@@ -602,10 +602,7 @@ func cmdImport(args []string) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(profilePath(name)), 0o755); err != nil {
-		fatal(err)
-	}
-	if err := os.WriteFile(profilePath(name), append(data, '\n'), 0o644); err != nil {
+	if err := saveProfile(name, &p); err != nil {
 		fatal(err)
 	}
 	success("Imported %q → %s", name, profilePath(name))
