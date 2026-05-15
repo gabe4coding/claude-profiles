@@ -12,45 +12,66 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const contextWindowLimit = 200_000 // tokens — all current Claude models
-
-// modelPrices holds per-million-token prices: [input, output, cacheWrite, cacheRead].
-// Matched by prefix: "opus" → opus tier, "haiku" → haiku tier, else → sonnet tier.
-var modelPrices = map[string][4]float64{
-	"sonnet": {3.00, 15.00, 3.75, 0.30},
-	"opus":   {15.00, 75.00, 18.75, 1.50},
-	"haiku":  {0.80, 4.00, 1.00, 0.08},
-}
-
-func priceTier(model string) string {
+// modelPricing holds per-million-token prices per model prefix:
+// [input, output, cacheWrite5m, cacheWrite1h, cacheRead]
+// Source: https://platform.claude.com/docs/en/about-claude/pricing (checked May 2026)
+func modelPricing(model string) [5]float64 {
 	switch {
-	case strings.Contains(model, "opus"):
-		return "opus"
-	case strings.Contains(model, "haiku"):
-		return "haiku"
+	// Opus 4.5 / 4.6 / 4.7 — $5 input, $25 output
+	case strings.HasPrefix(model, "claude-opus-4-5"),
+		strings.HasPrefix(model, "claude-opus-4-6"),
+		strings.HasPrefix(model, "claude-opus-4-7"):
+		return [5]float64{5.00, 25.00, 6.25, 10.00, 0.50}
+	// Opus 4.1 / 4.0 (deprecated) — $15 input, $75 output
+	case strings.HasPrefix(model, "claude-opus-4-1"),
+		strings.HasPrefix(model, "claude-opus-4-20"), // claude-opus-4-20250514
+		strings.HasPrefix(model, "claude-opus-4-0"):
+		return [5]float64{15.00, 75.00, 18.75, 30.00, 1.50}
+	// Haiku 4.5 — $1 input, $5 output
+	case strings.HasPrefix(model, "claude-haiku-4"):
+		return [5]float64{1.00, 5.00, 1.25, 2.00, 0.10}
+	// Haiku 3.5 (retired) — $0.80 input, $4 output
+	case strings.HasPrefix(model, "claude-haiku-3"):
+		return [5]float64{0.80, 4.00, 1.00, 1.60, 0.08}
+	// Sonnet 4.x / default — $3 input, $15 output
 	default:
-		return "sonnet"
+		return [5]float64{3.00, 15.00, 3.75, 6.00, 0.30}
 	}
 }
 
-func tokenCost(tier string, input, output, cacheCreate, cacheRead int) float64 {
-	p := modelPrices[tier]
+// modelContextWindow returns the context window size in tokens for a given model.
+// Sonnet 4.6, Opus 4.6, and Opus 4.7 support 1M tokens; others use 200k.
+func modelContextWindow(model string) int {
+	switch {
+	case strings.HasPrefix(model, "claude-sonnet-4-6"),
+		strings.HasPrefix(model, "claude-opus-4-6"),
+		strings.HasPrefix(model, "claude-opus-4-7"):
+		return 1_000_000
+	default:
+		return 200_000
+	}
+}
+
+func tokenCost(model string, input, output, cacheWrite5m, cacheWrite1h, cacheRead int) float64 {
+	p := modelPricing(model)
 	const M = 1_000_000.0
 	return (float64(input)*p[0] + float64(output)*p[1] +
-		float64(cacheCreate)*p[2] + float64(cacheRead)*p[3]) / M
+		float64(cacheWrite5m)*p[2] + float64(cacheWrite1h)*p[3] +
+		float64(cacheRead)*p[4]) / M
 }
 
 // modelUsage tracks per-model token counts within a session.
 type modelUsage struct {
-	Turns       int
-	Input       int
-	Output      int
-	CacheCreate int
-	CacheRead   int
+	Turns        int
+	Input        int
+	Output       int
+	CacheWrite5m int
+	CacheWrite1h int
+	CacheRead    int
 }
 
 func (m *modelUsage) cost(model string) float64 {
-	return tokenCost(priceTier(model), m.Input, m.Output, m.CacheCreate, m.CacheRead)
+	return tokenCost(model, m.Input, m.Output, m.CacheWrite5m, m.CacheWrite1h, m.CacheRead)
 }
 
 // sessionMetrics holds derived stats for a single session file.
@@ -63,11 +84,13 @@ type sessionMetrics struct {
 	TotalInput       int
 	TotalOutput      int
 	TotalCacheRead   int
-	TotalCacheCreate int
+	TotalCacheWrite5m int
+	TotalCacheWrite1h int
 	PeakContext      int // max(input+cache_read+cache_create) across turns
 	ToolCallCount    int
 	SysPromptTokens  int // first turn's cache_read — pre-existing system cache
 	FirstTurnCtx     int // first turn's total context (system prompt + initial content)
+	ContextLimit     int // model-specific context window (200k or 1M)
 	ModelUsage       map[string]*modelUsage
 }
 
@@ -80,7 +103,7 @@ func (s *sessionMetrics) totalCost() float64 {
 }
 
 func (s sessionMetrics) cacheHitRatio() float64 {
-	total := s.TotalCacheRead + s.TotalCacheCreate
+	total := s.TotalCacheRead + s.TotalCacheWrite5m + s.TotalCacheWrite1h
 	if total == 0 {
 		return 0
 	}
@@ -88,7 +111,11 @@ func (s sessionMetrics) cacheHitRatio() float64 {
 }
 
 func (s sessionMetrics) peakPercent() float64 {
-	return float64(s.PeakContext) / float64(contextWindowLimit) * 100
+	limit := s.ContextLimit
+	if limit == 0 {
+		limit = 200_000
+	}
+	return float64(s.PeakContext) / float64(limit) * 100
 }
 
 // sysPct is the system prompt's share of peak context.
@@ -120,10 +147,14 @@ type analyticsRawEvent struct {
 type rawMessage struct {
 	Model string `json:"model"`
 	Usage struct {
-		InputTokens              int `json:"input_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
+		InputTokens          int `json:"input_tokens"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		OutputTokens         int `json:"output_tokens"`
+		// CacheCreation sub-object has the 5m vs 1h breakdown.
+		CacheCreation struct {
+			Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
 	} `json:"usage"`
 	Content []struct {
 		Type string `json:"type"`
@@ -170,11 +201,14 @@ func parseSessionFile(path string) *sessionMetrics {
 		}
 
 		u := ev.Message.Usage
-		contextAtTurn := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+		cacheWrite5m := u.CacheCreation.Ephemeral5m
+		cacheWrite1h := u.CacheCreation.Ephemeral1h
+		contextAtTurn := u.InputTokens + cacheWrite5m + cacheWrite1h + u.CacheReadInputTokens
 
 		if firstTurn {
 			m.SysPromptTokens = u.CacheReadInputTokens // pre-existing cache = system prompt
 			m.FirstTurnCtx = contextAtTurn
+			m.ContextLimit = modelContextWindow(ev.Message.Model)
 			firstTurn = false
 		}
 		if contextAtTurn > m.PeakContext {
@@ -184,7 +218,8 @@ func parseSessionFile(path string) *sessionMetrics {
 		m.TotalInput += u.InputTokens
 		m.TotalOutput += u.OutputTokens
 		m.TotalCacheRead += u.CacheReadInputTokens
-		m.TotalCacheCreate += u.CacheCreationInputTokens
+		m.TotalCacheWrite5m += cacheWrite5m
+		m.TotalCacheWrite1h += cacheWrite1h
 		m.TurnCount++
 
 		for _, c := range ev.Message.Content {
@@ -205,7 +240,8 @@ func parseSessionFile(path string) *sessionMetrics {
 		mu.Turns++
 		mu.Input += u.InputTokens
 		mu.Output += u.OutputTokens
-		mu.CacheCreate += u.CacheCreationInputTokens
+		mu.CacheWrite5m += cacheWrite5m
+		mu.CacheWrite1h += cacheWrite1h
 		mu.CacheRead += u.CacheReadInputTokens
 	}
 
@@ -274,25 +310,49 @@ func cmdAnalytics(_ []string) {
 
 	// ── Legend ────────────────────────────────────────────────────────────
 
-	legend := []struct{ key, desc string }{
-		{"in tokens", "Σ(input + cache_read + cache_create) per turn, summed across all turns.\n" +
-			"              Context is re-read in full every turn, so this greatly exceeds\n" +
-			"              peak context × sessions — it reflects actual API processing load."},
-		{"Peak / Sys%", "Highest single-turn context vs the 200k limit.\n" +
-			"              Sys% = system prompt share of peak (first-turn cache_read).\n" +
-			"              High Sys% → CLAUDE.md or hook output is large relative to work done."},
-		{"Conv%", "Context added beyond the first turn: conversation history + tool results.\n" +
-			"              High is normal in long sessions. Close to 0% = very short session."},
-		{"Cache Hit", "cache_read / (cache_read + cache_create). High is good — it means\n" +
-			"              the system prompt stays stable across turns and you're paying the\n" +
-			"              cheaper $0.30/MTok cache-read rate instead of $3.00/MTok fresh input."},
-		{"Est. Cost", "Calculated from token counts × Anthropic list prices. Not billed cost\n" +
-			"              (discounts, free tier, or API credits are not reflected)."},
+	// Each entry is a key and one or more plain-English lines.
+	// Lines are rendered separately so \n doesn't break column alignment.
+	const legendKeyWidth = 12
+	legendIndent := strings.Repeat(" ", 2+legendKeyWidth+2)
+	legend := []struct {
+		key   string
+		lines []string
+	}{
+		{"in tokens", []string{
+			"Every response re-reads the whole conversation from scratch.",
+			"This column totals all those re-reads, so it's much larger than",
+			"'peak context × sessions'. It reflects your real API workload.",
+		}},
+		{"Peak / Sys%", []string{
+			"How full Claude's memory got at its busiest moment — shown as a",
+			"percentage of the model's limit (200k for Haiku, 1M for Sonnet/Opus).",
+			"Sys% = how much of that memory is just setup/instructions (CLAUDE.md,",
+			"hooks). High Sys% means config is crowding out actual conversation.",
+		}},
+		{"Conv%", []string{
+			"Memory consumed by the conversation and tool outputs as the session grew.",
+			"High is normal and healthy — it just means you had a long session.",
+		}},
+		{"Cache Hit", []string{
+			"How often Claude reused already-processed content instead of re-reading it",
+			"fresh. High is good: cached reads cost 10× less than uncached input.",
+			"Low ratio means your setup or instructions change between turns, which",
+			"forces Claude to reprocess everything from scratch every time.",
+		}},
+		{"Est. Cost", []string{
+			"Calculated from token counts × Anthropic's published prices.",
+			"Does not reflect discounts, free credits, or negotiated rates.",
+		}},
 	}
 	fmt.Fprintln(os.Stderr, dimStyle.Render("How to read this output:"))
 	for _, l := range legend {
-		fmt.Fprintf(os.Stderr, "%s\n",
-			dimStyle.Render(fmt.Sprintf("  %-12s  %s", l.key, l.desc)))
+		for i, line := range l.lines {
+			if i == 0 {
+				fmt.Fprintf(os.Stderr, "%s\n", dimStyle.Render(fmt.Sprintf("  %-*s  %s", legendKeyWidth, l.key, line)))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s\n", dimStyle.Render(legendIndent+line))
+			}
+		}
 	}
 	fmt.Fprintln(os.Stderr)
 
@@ -300,11 +360,12 @@ func cmdAnalytics(_ []string) {
 
 	// Aggregate global and per-model totals.
 	type globalStats struct {
-		Sessions    int
-		TotalInput  int
-		TotalOutput int
-		CacheCreate int
-		CacheRead   int
+		Sessions      int
+		TotalInput    int
+		TotalOutput   int
+		CacheWrite5m  int
+		CacheWrite1h  int
+		CacheRead     int
 	}
 	global := globalStats{}
 	modelGlobal := map[string]*modelUsage{} // model id → totals across all sessions
@@ -314,7 +375,8 @@ func cmdAnalytics(_ []string) {
 		global.Sessions++
 		global.TotalInput += s.TotalInput
 		global.TotalOutput += s.TotalOutput
-		global.CacheCreate += s.TotalCacheCreate
+		global.CacheWrite5m += s.TotalCacheWrite5m
+		global.CacheWrite1h += s.TotalCacheWrite1h
 		global.CacheRead += s.TotalCacheRead
 		for model, mu := range s.ModelUsage {
 			g := modelGlobal[model]
@@ -325,7 +387,8 @@ func cmdAnalytics(_ []string) {
 			g.Turns += mu.Turns
 			g.Input += mu.Input
 			g.Output += mu.Output
-			g.CacheCreate += mu.CacheCreate
+			g.CacheWrite5m += mu.CacheWrite5m
+			g.CacheWrite1h += mu.CacheWrite1h
 			g.CacheRead += mu.CacheRead
 		}
 	}
@@ -356,7 +419,7 @@ func cmdAnalytics(_ []string) {
 	sep()
 	fmt.Fprintf(os.Stderr, "  %s  %s in · %s out   Est. cost: %s\n\n",
 		boldStyle.Render(fmt.Sprintf("%d sessions", global.Sessions)),
-		formatTokens(global.TotalInput+global.CacheRead+global.CacheCreate),
+		formatTokens(global.TotalInput+global.CacheRead+global.CacheWrite5m+global.CacheWrite1h),
 		formatTokens(global.TotalOutput),
 		styleTitle.Render(fmt.Sprintf("$%.2f", totalCost)))
 
@@ -392,7 +455,7 @@ func cmdAnalytics(_ []string) {
 	}
 	for _, s := range sessions[:limit] {
 		pct := s.peakPercent()
-		peakStr := fmt.Sprintf("%dk/%dk (%d%%)", s.PeakContext/1000, contextWindowLimit/1000, int(pct))
+		peakStr := fmt.Sprintf("%dk/%dk (%d%%)", s.PeakContext/1000, s.ContextLimit/1000, int(pct))
 		var peakColored string
 		switch {
 		case pct >= 80:
@@ -429,12 +492,13 @@ func cmdAnalytics(_ []string) {
 	// ── Per-Profile Cache Efficiency ──────────────────────────────────────
 
 	type profileStats struct {
-		Sessions         int
-		TotalCacheRead   int
-		TotalCacheCreate int
-		PeakSum          int
-		MaxPeak          int
-		TotalCost        float64
+		Sessions          int
+		TotalCacheRead    int
+		TotalCacheWrite5m int
+		TotalCacheWrite1h int
+		PeakSum           int
+		MaxPeak           int
+		TotalCost         float64
 	}
 	profileMap := map[string]*profileStats{}
 	for i := range sessions {
@@ -446,7 +510,8 @@ func cmdAnalytics(_ []string) {
 		}
 		ps.Sessions++
 		ps.TotalCacheRead += s.TotalCacheRead
-		ps.TotalCacheCreate += s.TotalCacheCreate
+		ps.TotalCacheWrite5m += s.TotalCacheWrite5m
+		ps.TotalCacheWrite1h += s.TotalCacheWrite1h
 		ps.PeakSum += s.PeakContext
 		if s.PeakContext > ps.MaxPeak {
 			ps.MaxPeak = s.PeakContext
@@ -477,7 +542,7 @@ func cmdAnalytics(_ []string) {
 		if p.Sessions > 0 {
 			avgPeak = p.PeakSum / p.Sessions
 		}
-		total := p.TotalCacheRead + p.TotalCacheCreate
+		total := p.TotalCacheRead + p.TotalCacheWrite5m + p.TotalCacheWrite1h
 		hitRatio := 0.0
 		if total > 0 {
 			hitRatio = float64(p.TotalCacheRead) / float64(total) * 100
@@ -510,7 +575,7 @@ func cmdAnalytics(_ []string) {
 	hasRecs := false
 
 	for _, p := range profileList {
-		total := p.TotalCacheRead + p.TotalCacheCreate
+		total := p.TotalCacheRead + p.TotalCacheWrite5m + p.TotalCacheWrite1h
 		if total == 0 || p.Sessions < 2 {
 			continue
 		}
@@ -528,7 +593,7 @@ func cmdAnalytics(_ []string) {
 		}
 	}
 	if heavyCount > 0 {
-		warn("  %d session(s) exceeded 80%% of context limit (%dk tokens) — break large tasks or use /compact", heavyCount, contextWindowLimit/1000)
+		warn("  %d session(s) exceeded 80%% of context limit — break large tasks or use /compact", heavyCount)
 		hasRecs = true
 	}
 
