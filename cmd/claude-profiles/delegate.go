@@ -63,6 +63,8 @@ tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DEL
 
 echo "DELEGATE_ID=$DELG_ID"
 echo "DELEGATE_WINDOW=delegate-$DELG_ID"
+echo "DELEGATE_RESULT=$DIR/result.md"
+echo "DELEGATE_DIR=$DIR"
 
 # Wait up to 20s for the runner to discover and announce its .jsonl path.
 # Claude can take 10+s to write its first session line on slow startups (MCP
@@ -209,7 +211,7 @@ fi
 `
 
 const delegateSlashCommand = `---
-description: Delegate an interactive subtask to another profile in a new tmux window. The delegate runs autonomously; its progress streams back live and its final answer lands automatically as added context on your next prompt.
+description: Delegate an interactive subtask to another profile in a new tmux window. The delegate runs autonomously; progress streams back live and the final answer is read out of result.md immediately when the delegate finishes.
 argument-hint: <profile-id|intent> [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
@@ -225,13 +227,15 @@ Call the Bash tool, synchronously:
 
   "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" "<task body...>"
 
-That script does all the bookkeeping (request file, tmux pane, env guards) and prints three lines to stdout:
+That script does all the bookkeeping (request file, tmux pane, env guards) and prints these lines to stdout:
 
   DELEGATE_ID=<id>
   DELEGATE_WINDOW=delegate-<id>
+  DELEGATE_RESULT=<path to result.md>
+  DELEGATE_DIR=<delegate dir>
   DELEGATE_JSONL=<path or empty>
 
-Read them out of the script's output and remember the id.
+Read them out of the script's output and remember the id and the result path.
 
 # 3. Stream progress (skip if DELEGATE_JSONL was empty)
 
@@ -254,11 +258,17 @@ The watcher emits one of four kinds of line; treat each accordingly.
   - ` + "`⏳ …`" + ` — periodic progress or heartbeat digest. The delegate is still working. Echo it to the user (one short line), then keep monitoring.
   - ` + "`⚠ stuck …`" + ` — no new events for several intervals. The delegate is probably waiting on a hung upstream (slow MCP server, network, etc.). Tell the user ONCE and ask whether to keep waiting or abort. **Do NOT keep emitting follow-up "still stuck" messages.** Stay quiet; the watcher will either resume emitting ` + "`⏳`" + ` lines (recovered) or eventually emit ` + "`✗ abandoning`" + ` on its own.
   - ` + "`✗ abandoning …`" + ` — the watcher gave up and already killed the delegate's tmux window. Tell the user the delegate was force-abandoned (cite the elapsed time). Then **clean up the watcher task** (see Step 5).
-  - ` + "`✓ delegate done`" + ` — completion. Watcher exited cleanly; the runner also auto-killed the delegate's tmux window once the first turn finished. Tell the user the delegate finished, then **clean up the watcher task** (see Step 5). The UserPromptSubmit hook will inject the full final reply on the next user prompt.
+  - ` + "`✓ delegate done`" + ` — completion. Watcher exited cleanly; the runner auto-killed the delegate's tmux window once the first turn finished. Immediately:
+    1. Read DELEGATE_RESULT with the Read tool — that's the delegate's full final reply.
+    2. Relay its content to the user in your own next message (you can quote, summarize, or pass through; user's choice of framing).
+    3. Rename result.md → delivered.md so the UserPromptSubmit hook doesn't re-inject it later:
+         ` + "`mv \"$DELEGATE_DIR/result.md\" \"$DELEGATE_DIR/delivered.md\"`" + `
+       (Skip this if the file is already named delivered.md — race with the hook is harmless.)
+    4. **clean up the watcher task** (see Step 5).
 
 DO NOT call TaskStop on the watcher mid-stream just because the delegate "looks done" or "has produced enough output". Only ` + "`✓ delegate done`" + ` and ` + "`✗ abandoning`" + ` are real terminal signals — at that point cleanup is not just allowed, it's required.
 
-DO NOT read the delegate's .jsonl yourself to construct a result. The UserPromptSubmit hook injects the full final reply into the parent session automatically on the next prompt — you'll see it as additionalContext starting with ` + "`[delegate <id> · profile <p> · completed …]`" + `. Wait for that.
+DO NOT read the delegate's .jsonl yourself to construct a result — read DELEGATE_RESULT (the result.md the runner wrote). Reading the .jsonl directly would force you to re-derive the last assistant message, which is brittle.
 
 # 5. Cleanup (after ` + "`✓ done`" + `, ` + "`✗ abandoning`" + `, or user-requested abort)
 
@@ -270,7 +280,7 @@ The delegate's tmux window is killed automatically (by the runner on ` + "`✓`"
 
 # 6. Acknowledge
 
-One or two short lines to the user up front: which profile, what task, the delegate id and tmux window name, and whether you're streaming live progress (Step 3 ran) or waiting for the result on the next prompt (DELEGATE_JSONL was empty).
+One or two short lines to the user up front: which profile, what task, the delegate id and tmux window name. If DELEGATE_JSONL was empty, mention that live progress isn't available — the final result will still arrive when the watcher reports done (you'll Read DELEGATE_RESULT at that point).
 
 You can keep helping with the main task while the delegate runs.
 `
