@@ -32,6 +32,7 @@ type ProfilePrefs struct {
 	Description string          `json:"_description,omitempty"`
 	Isolated    bool            `json:"_isolated,omitempty"`
 	Hidden      bool            `json:"_hidden,omitempty"`
+	Worktree    bool            `json:"_worktree,omitempty"`
 	Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
 	Cwd         string          `json:"_cwd,omitempty"`
 	// Settings is an optional user-side override for the profile's settings.json.
@@ -101,6 +102,9 @@ type Profile struct {
 	// this flag — those require --bare, which would break /switch. Default
 	// is false (profile blends with the user's root configuration as before).
 	Isolated bool `json:"_isolated,omitempty"`
+	// Worktree (when true) passes --worktree to claude so each session starts in
+	// a fresh git worktree rather than the main working tree.
+	Worktree bool `json:"_worktree,omitempty"`
 	// Prompts is an optional list of named messages offered to the user before
 	// the session starts. Selecting one sends it as the initial message;
 	// skipping starts an interactive session with no pre-filled text.
@@ -273,6 +277,7 @@ func saveProfileAt(dir string, p *Profile) error {
 		Description: p.Description,
 		Isolated:    p.Isolated,
 		Hidden:      existingPrefs.Hidden,
+		Worktree:    p.Worktree,
 		Prompts:     p.Prompts,
 		Cwd:         p.Cwd,
 	})
@@ -417,6 +422,7 @@ func loadProfileAt(path string) (*Profile, error) {
 		prefs := loadProfilePrefs(filepath.Dir(path))
 		p.Description = prefs.Description
 		p.Isolated = prefs.Isolated
+		p.Worktree = prefs.Worktree
 		p.Prompts = prefs.Prompts
 		p.Cwd = prefs.Cwd
 		if len(prefs.Settings) > 0 {
@@ -467,6 +473,9 @@ func claudeFlags(p *Profile, settingsPath string) []string {
 	}
 	if p.Isolated {
 		args = append(args, "--setting-sources=")
+	}
+	if p.Worktree {
+		args = append(args, "--worktree")
 	}
 	return args
 }

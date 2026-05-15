@@ -711,6 +711,12 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 	}
 	isolatedLabel := fmt.Sprintf("Isolated mode: %s (ignore user/project settings.json)", isolatedState)
 
+	worktreeState := "off"
+	if p.Worktree {
+		worktreeState = "on"
+	}
+	worktreeLabel := fmt.Sprintf("Worktree mode: %s (start each session in a fresh git worktree)", worktreeState)
+
 	kinds := profilePluginKinds(loc)
 	pluginSummary := "none"
 	if len(kinds) > 0 {
@@ -726,6 +732,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 		// Project and repo profiles: only prefs-backed options are safe to edit.
 		opts = []huh.Option[string]{
 			huh.NewOption(isolatedLabel, "isolated"),
+			huh.NewOption(worktreeLabel, "worktree"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption("Open user settings in $EDITOR", "editor"),
@@ -736,6 +743,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 			huh.NewOption(toolsLabel, "tools"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption(isolatedLabel, "isolated"),
+			huh.NewOption(worktreeLabel, "worktree"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile folder in $EDITOR", "editor"),

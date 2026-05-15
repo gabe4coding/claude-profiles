@@ -694,6 +694,9 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		if p.Isolated {
 			tags = append(tags, "isolated")
 		}
+		if p.Worktree {
+			tags = append(tags, "worktree")
+		}
 		if p.Cwd != "" {
 			tags = append(tags, "cwd")
 		}

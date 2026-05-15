@@ -252,6 +252,9 @@ func cmdList() {
 			if p.Isolated {
 				tags = append(tags, "isolated")
 			}
+			if p.Worktree {
+				tags = append(tags, "worktree")
+			}
 			if p.Cwd != "" {
 				tags = append(tags, "cwd")
 			}
@@ -491,6 +494,7 @@ func runEditMenu(loc ProfileLocation) {
 				Description: p.Description,
 				Isolated:    p.Isolated,
 				Hidden:      existingPrefs.Hidden,
+				Worktree:    p.Worktree,
 				Prompts:     p.Prompts,
 				Cwd:         p.Cwd,
 				Settings:    p.Settings,
@@ -532,6 +536,16 @@ func runEditMenu(loc ProfileLocation) {
 				state = "on"
 			}
 			info("Isolated mode is now %s.", state)
+		case "worktree":
+			p.Worktree = !p.Worktree
+			if err := saveFn(p); err != nil {
+				fatal(err)
+			}
+			state := "off"
+			if p.Worktree {
+				state = "on"
+			}
+			info("Worktree mode is now %s.", state)
 		case "prompts":
 			managePrompts(p, loc, saveFn)
 		case "plugin":
