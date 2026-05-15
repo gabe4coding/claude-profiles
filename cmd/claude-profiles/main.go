@@ -373,13 +373,16 @@ func cmdEdit(args []string) {
 		}
 		arg = picked
 	}
-	// "./name" targets a project-local profile — open its directory in $EDITOR
-	// (the interactive edit menu is scoped to user-level profiles only).
-	if strings.HasPrefix(arg, "./") {
-		loc, err := resolveProfileLocation(arg)
-		if err != nil {
-			fatal(err)
-		}
+	loc, err := resolveProfileLocation(arg)
+	if err != nil {
+		fatal(err)
+	}
+	// Repo profiles are read-only.
+	if loc.RepoAlias != "" && loc.RepoAlias != "." {
+		fatal(fmt.Errorf("repo profiles are read-only — run: claude-profiles copy %s <local-name>", arg))
+	}
+	// Project profiles: open the folder in $EDITOR (no interactive menu).
+	if loc.RepoAlias == "." {
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
 			editor = "vi"
@@ -393,17 +396,12 @@ func cmdEdit(args []string) {
 		}
 		return
 	}
-	if strings.Contains(arg, "/") {
-		fatal(fmt.Errorf("repo profiles are read-only — run: claude-profiles copy %s <local-name>", arg))
-	}
-	if !profileExists(arg) {
-		fatal(fmt.Errorf("profile not found: %s", arg))
-	}
+	// Local profile: interactive edit menu (or $EDITOR fallback for non-TTY).
 	if !isTTY() {
-		openProfileInEditor(arg)
+		openProfileInEditor(loc.Name)
 		return
 	}
-	runEditMenu(arg)
+	runEditMenu(loc.Name)
 }
 
 func openProfileInEditor(name string) {
