@@ -47,6 +47,21 @@ func claudeTheme() *huh.Theme {
 	return t
 }
 
+// runForm wraps multiple huh Fields in a Form with the same preferred bindings
+// as runField. Use when a single step needs more than one input.
+func runForm(fields ...huh.Field) error {
+	km := huh.NewDefaultKeyMap()
+	km.Quit = key.NewBinding(
+		key.WithKeys("esc", "ctrl+c"),
+		key.WithHelp("esc/ctrl+c", "back"),
+	)
+	return huh.NewForm(huh.NewGroup(fields...)).
+		WithShowHelp(true).
+		WithKeyMap(km).
+		WithTheme(claudeTheme()).
+		Run()
+}
+
 // runField wraps a huh Field in a Form configured with our preferred bindings:
 //   - Esc and Ctrl+C both abort (return huh.ErrUserAborted)
 //   - help footer visible (↑↓ navigate, enter select, esc back …)
@@ -669,6 +684,9 @@ func pickEditAction(name string, p *Profile) string {
 	}
 	pluginLabel := fmt.Sprintf("Profile-bundled commands/skills/agents/hooks (%s)", pluginSummary)
 
+	promptCount := len(p.Prompts)
+	promptsLabel := fmt.Sprintf("Session prompts — pre-filled starters (%d defined)", promptCount)
+
 	action := "tools"
 	err := runField(huh.NewSelect[string]().
 		Title("Edit " + name).
@@ -676,6 +694,7 @@ func pickEditAction(name string, p *Profile) string {
 			huh.NewOption(toolsLabel, "tools"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption(isolatedLabel, "isolated"),
+			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile folder in $EDITOR", "editor"),
 			huh.NewOption("Done", "done"),
@@ -875,4 +894,119 @@ func clearServerDeniedTools(p *Profile, sname string) {
 		}
 	}
 	p.DeniedTools = kept
+}
+
+// ── Prompt management ─────────────────────────────────────────────────────────
+
+// managePrompts is the interactive sub-menu for adding, editing, and deleting
+// _prompts entries on a profile. Saves after each change; Esc returns to caller.
+func managePrompts(p *Profile, name string) {
+	for {
+		opts := make([]huh.Option[string], 0, len(p.Prompts)+1)
+		for i, pr := range p.Prompts {
+			preview := pr.Text
+			if len(preview) > 48 {
+				preview = preview[:48] + "…"
+			}
+			label := fmt.Sprintf("%-20s  %s", pr.Name, styleInfo.Render(preview))
+			opts = append(opts, huh.NewOption(label, fmt.Sprintf("%d", i)))
+		}
+		opts = append(opts, huh.NewOption("+ Add new prompt", "add"))
+
+		sel := "add"
+		if len(p.Prompts) > 0 {
+			sel = "0"
+		}
+		err := runFieldBack(huh.NewSelect[string]().
+			Title(fmt.Sprintf("Manage prompts for %s (Esc to go back)", name)).
+			Options(opts...).
+			Value(&sel))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return
+		}
+
+		if sel == "add" {
+			if addPrompt(p) {
+				if err := saveProfile(name, p); err != nil {
+					fatal(err)
+				}
+			}
+			continue
+		}
+
+		var idx int
+		fmt.Sscanf(sel, "%d", &idx)
+		if idx < 0 || idx >= len(p.Prompts) {
+			continue
+		}
+		if promptAction(p, idx) {
+			if err := saveProfile(name, p); err != nil {
+				fatal(err)
+			}
+		}
+	}
+}
+
+// addPrompt runs the add-prompt form and appends the result to p.Prompts.
+// Returns true when a prompt was actually added.
+func addPrompt(p *Profile) bool {
+	var pname, ptext string
+	err := runForm(
+		huh.NewInput().Title("Prompt name").Placeholder("e.g. Daily standup").Value(&pname),
+		huh.NewText().Title("Prompt text").Placeholder("Type the message text…").Value(&ptext),
+	)
+	if errors.Is(err, huh.ErrUserAborted) || err != nil {
+		return false
+	}
+	pname = strings.TrimSpace(pname)
+	if pname == "" {
+		return false
+	}
+	p.Prompts = append(p.Prompts, ProfilePrompt{Name: pname, Text: strings.TrimSpace(ptext)})
+	success("  + Added prompt %q", pname)
+	return true
+}
+
+// promptAction shows edit/delete options for p.Prompts[idx].
+// Returns true when the slice was mutated.
+func promptAction(p *Profile, idx int) bool {
+	pr := p.Prompts[idx]
+	var action string
+	err := runFieldBack(huh.NewSelect[string]().
+		Title(fmt.Sprintf("Prompt: %q", pr.Name)).
+		Options(
+			huh.NewOption("Edit name and text", "edit"),
+			huh.NewOption("Delete this prompt", "delete"),
+		).
+		Value(&action))
+	if errors.Is(err, huh.ErrUserAborted) {
+		return false
+	}
+	switch action {
+	case "edit":
+		pname, ptext := pr.Name, pr.Text
+		err := runForm(
+			huh.NewInput().Title("Prompt name").Value(&pname),
+			huh.NewText().Title("Prompt text").Value(&ptext),
+		)
+		if errors.Is(err, huh.ErrUserAborted) || err != nil {
+			return false
+		}
+		pname = strings.TrimSpace(pname)
+		if pname == "" {
+			return false
+		}
+		p.Prompts[idx].Name = pname
+		p.Prompts[idx].Text = strings.TrimSpace(ptext)
+		success("  + Updated prompt %q", pname)
+		return true
+	case "delete":
+		if !confirm(fmt.Sprintf("Delete prompt %q?", pr.Name)) {
+			return false
+		}
+		p.Prompts = append(p.Prompts[:idx], p.Prompts[idx+1:]...)
+		success("  + Deleted prompt %q", pr.Name)
+		return true
+	}
+	return false
 }

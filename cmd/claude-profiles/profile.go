@@ -160,10 +160,15 @@ func saveProfileAt(dir string, p *Profile) error {
 
 	// profile.json — metadata only
 	type profileMeta struct {
-		Description string `json:"_description,omitempty"`
-		Isolated    bool   `json:"_isolated,omitempty"`
+		Description string          `json:"_description,omitempty"`
+		Isolated    bool            `json:"_isolated,omitempty"`
+		Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
 	}
-	metaData, err := json.MarshalIndent(profileMeta{Description: p.Description, Isolated: p.Isolated}, "", "  ")
+	metaData, err := json.MarshalIndent(profileMeta{
+		Description: p.Description,
+		Isolated:    p.Isolated,
+		Prompts:     p.Prompts,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}

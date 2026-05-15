@@ -452,6 +452,8 @@ func runEditMenu(name string) {
 				state = "on"
 			}
 			info("Isolated mode is now %s.", state)
+		case "prompts":
+			managePrompts(p, name)
 		case "plugin":
 			manageProfilePlugin(name)
 		case "editor":
