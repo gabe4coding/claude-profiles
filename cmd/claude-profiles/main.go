@@ -426,22 +426,68 @@ func openInEditor(path string) {
 	_ = cmd.Run()
 }
 
+// editRepoProfileSettings opens a temp JSON file containing the profile's
+// current user-settings override, lets the user edit it in $EDITOR, then
+// reads it back and saves it via saveFn. Used for repo/project profiles whose
+// source files must not be modified.
+func editRepoProfileSettings(p *Profile, saveFn func(*Profile) error) {
+	content := p.Settings
+	if len(content) == 0 {
+		content = json.RawMessage("{}\n")
+	}
+	f, err := os.CreateTemp("", "claude-profiles-settings-*.json")
+	if err != nil {
+		warn("Could not create temp file: %v", err)
+		return
+	}
+	tmpName := f.Name()
+	defer os.Remove(tmpName)
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return
+	}
+	f.Close()
+	openInEditor(tmpName)
+	data, err := os.ReadFile(tmpName)
+	if err != nil {
+		warn("Could not read edited settings: %v", err)
+		return
+	}
+	var check map[string]any
+	if err := json.Unmarshal(data, &check); err != nil {
+		warn("Settings not saved — invalid JSON: %v", err)
+		return
+	}
+	if len(check) == 0 {
+		p.Settings = nil
+	} else {
+		p.Settings = json.RawMessage(data)
+	}
+	if err := saveFn(p); err != nil {
+		fatal(err)
+	}
+}
+
 // runEditMenu drives the interactive edit flow: per-server allow/deny tooling,
 // session settings, raw $EDITOR escape hatch. Loops until the user picks Done
 // (or aborts with Esc). State is reloaded from disk each iteration so the
 // $EDITOR branch picks up.
 func runEditMenu(loc ProfileLocation) {
 	dir := filepath.Dir(loc.JSONPath)
-	// Project and repo profiles: only write user prefs (isolated, prompts) —
-	// don't touch the source files which are either git-tracked or a sync cache.
+	// Project and repo profiles: only write user prefs (isolated, prompts,
+	// settings) — don't touch the source files which are either git-tracked or
+	// a sync cache.
 	var saveFn func(*Profile) error
 	if loc.RepoAlias != "" {
 		saveFn = func(p *Profile) error {
+			existingPrefs := loadProfilePrefs(dir)
 			return saveProfilePrefs(dir, ProfilePrefs{
 				Description: p.Description,
 				Isolated:    p.Isolated,
+				Hidden:      existingPrefs.Hidden,
 				Prompts:     p.Prompts,
 				Cwd:         p.Cwd,
+				Settings:    p.Settings,
 			})
 		}
 	} else {
@@ -461,8 +507,14 @@ func runEditMenu(loc ProfileLocation) {
 			}
 		case "settings":
 			configureSettings(p)
-			if err := saveProfileAt(dir, p); err != nil {
-				fatal(err)
+			if loc.RepoAlias != "" {
+				if err := saveFn(p); err != nil {
+					fatal(err)
+				}
+			} else {
+				if err := saveProfileAt(dir, p); err != nil {
+					fatal(err)
+				}
 			}
 		case "isolated":
 			p.Isolated = !p.Isolated
@@ -479,7 +531,11 @@ func runEditMenu(loc ProfileLocation) {
 		case "plugin":
 			manageProfilePlugin(loc)
 		case "editor":
-			openInEditor(dir)
+			if loc.RepoAlias != "" {
+				editRepoProfileSettings(p, saveFn)
+			} else {
+				openInEditor(dir)
+			}
 		case "done", "":
 			return
 		}

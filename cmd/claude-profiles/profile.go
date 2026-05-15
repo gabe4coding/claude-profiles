@@ -34,6 +34,9 @@ type ProfilePrefs struct {
 	Hidden      bool            `json:"_hidden,omitempty"`
 	Prompts     []ProfilePrompt `json:"_prompts,omitempty"`
 	Cwd         string          `json:"_cwd,omitempty"`
+	// Settings is an optional user-side override for the profile's settings.json.
+	// When non-empty it replaces whatever settings the remote profile provides.
+	Settings json.RawMessage `json:"_settings,omitempty"`
 }
 
 // ProfilePrefsStore is the on-disk shape of ~/.claude-profiles/profile-prefs.json.
@@ -416,6 +419,9 @@ func loadProfileAt(path string) (*Profile, error) {
 		p.Isolated = prefs.Isolated
 		p.Prompts = prefs.Prompts
 		p.Cwd = prefs.Cwd
+		if len(prefs.Settings) > 0 {
+			p.Settings = prefs.Settings
+		}
 	}
 
 	// Fall back to .claude-plugin/plugin.json for description (always last resort).

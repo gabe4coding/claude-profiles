@@ -727,6 +727,8 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 		opts = []huh.Option[string]{
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(promptsLabel, "prompts"),
+			huh.NewOption(settingsLabel, "settings"),
+			huh.NewOption("Open user settings in $EDITOR", "editor"),
 			huh.NewOption("Done", "done"),
 		}
 	} else {
