@@ -380,8 +380,9 @@ func cmdEdit(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	// Repo profiles: promote to a CWD-pinned local override instead of blocking.
-	if loc.RepoAlias != "" && loc.RepoAlias != "." {
+	// Project and repo profiles: promote to a CWD-pinned local override so the
+	// source stays clean (project files committed to git; repo cache read-only).
+	if loc.RepoAlias != "" {
 		editAsLocalOverride(*loc)
 		return
 	}
@@ -450,21 +451,27 @@ func runEditMenu(loc ProfileLocation) {
 	}
 }
 
-// editAsLocalOverride promotes a repo profile to a CWD-pinned local copy and
-// opens the interactive edit menu on it. If a local profile already exists with
-// _cwd matching the current directory and the suggested name, we reuse it.
+// editAsLocalOverride promotes a project or repo profile to a CWD-pinned local
+// copy and opens the interactive edit menu on it. Project profiles use their
+// bare name so the hub shows both "./name" (project) and "name" (local override)
+// simultaneously. Repo profiles prefix with the alias (e.g. "myrepo-name").
+// If a matching CWD-pinned local profile already exists it is reused directly.
 func editAsLocalOverride(src ProfileLocation) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		fatal(err)
 	}
 
-	defaultName := src.RepoAlias + "-" + src.Name
+	// Project profiles: same name as source so hub shows both "./name" and "name".
+	// Repo profiles: "alias-name" to distinguish from any project/local profile.
+	defaultName := src.Name
+	if src.RepoAlias != "." {
+		defaultName = src.RepoAlias + "-" + src.Name
+	}
 
-	// Reuse an existing override if one already exists for this CWD.
+	// Reuse an existing CWD-pinned override without prompting.
 	if profileExists(defaultName) {
 		if existing, err := loadProfile(defaultName); err == nil && existing.Cwd == cwd {
-			info("Using existing local override %q (pinned to %s)", defaultName, cwd)
 			runEditMenu(ProfileLocation{
 				Name:        defaultName,
 				QualifiedID: defaultName,
@@ -474,7 +481,13 @@ func editAsLocalOverride(src ProfileLocation) {
 		}
 	}
 
-	// Prompt for the local name.
+	// First time: explain what's happening and ask for the local name.
+	sourceKind := "repo"
+	if src.RepoAlias == "." {
+		sourceKind = "project"
+	}
+	info("%s profile %q is read-only — creating a local CWD-pinned override.", sourceKind, src.QualifiedID)
+
 	localName := defaultName
 	if isTTY() {
 		localName = promptWithDefault("Local override name", defaultName)
@@ -486,7 +499,6 @@ func editAsLocalOverride(src ProfileLocation) {
 
 	if profileExists(localName) {
 		if existing, err := loadProfile(localName); err == nil && existing.Cwd == cwd {
-			info("Using existing local override %q (pinned to %s)", localName, cwd)
 			runEditMenu(ProfileLocation{
 				Name:        localName,
 				QualifiedID: localName,
