@@ -69,9 +69,9 @@ type hubModel struct {
 	input  textinput.Model
 	focus  focusTarget
 	result hubResult
-	help   string
 	width  int
 	height int
+	showOtherActions bool
 
 	// Two delegates: focusedDelegate uses the coral highlight for the selected
 	// row, unfocusedDelegate makes the selected row look like a normal row.
@@ -92,6 +92,7 @@ type hubModel struct {
 // only appears when the list is the active pane.
 func (m *hubModel) setFocus(t focusTarget) tea.Cmd {
 	m.focus = t
+	m.showOtherActions = false
 	if t == focusInput {
 		m.input.Focus()
 		m.list.SetDelegate(m.unfocusedDelegate)
@@ -211,9 +212,16 @@ func (m hubModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.result = hubResult{action: actQuit}
 		return m, tea.Quit
 	case "esc":
+		if m.showOtherActions {
+			m.showOtherActions = false
+			return m, nil
+		}
 		// Esc from list bounces back to the input (less destructive than quit).
 		cmd := m.setFocus(focusInput)
 		return m, cmd
+	case "?":
+		m.showOtherActions = !m.showOtherActions
+		return m, nil
 	case "tab":
 		cmd := m.setFocus(focusInput)
 		return m, cmd
@@ -278,7 +286,7 @@ func (m hubModel) selectedID() string {
 
 func (m hubModel) View() string {
 	inputView := inputBlockStyle(m.focus == focusInput).Render(askPromptStyle.Render("Ask  ") + m.input.View())
-	return "\n" + hubTitleBar() + "\n" + inputView + "\n" + m.list.View() + "\n" + m.help
+	return "\n" + hubTitleBar() + "\n" + inputView + "\n" + m.list.View() + "\n" + m.hubHelpFooter()
 }
 
 // ── Public entrypoint ─────────────────────────────────────────────────────────
@@ -342,7 +350,6 @@ func runHub() hubResult {
 		list:              l,
 		input:             ti,
 		focus:             focusInput,
-		help:              hubHelpFooter(),
 		historyIdx:        -1,
 		focusedDelegate:   focused,
 		unfocusedDelegate: unfocused,
@@ -508,20 +515,34 @@ func hubTitleBar() string {
 	return badge + status
 }
 
-func hubHelpFooter() string {
-	keys := []struct{ k, v string }{
-		{"↵", "ask/launch"},
-		{"↓", "list"},
-		{"n", "new"},
-		{"g", "generate (AI)"},
-		{"e", "edit"},
-		{"d", "delete"},
-		{"c", "copy"},
-		{"x", "export"},
-		{"i", "import"},
-		{"r", "repos"},
-		{"/", "filter"},
-		{"q", "quit"},
+func (m hubModel) hubHelpFooter() string {
+	var keys []struct{ k, v string }
+	switch {
+	case m.focus == focusInput:
+		keys = []struct{ k, v string }{
+			{"↵", "ask"},
+			{"↓", "list"},
+			{"q", "quit"},
+		}
+	case m.showOtherActions:
+		keys = []struct{ k, v string }{
+			{"c", "copy"},
+			{"x", "export"},
+			{"i", "import"},
+			{"r", "repos"},
+			{"esc", "back"},
+		}
+	default:
+		keys = []struct{ k, v string }{
+			{"↵", "launch"},
+			{"n", "new"},
+			{"g", "generate (AI)"},
+			{"e", "edit"},
+			{"d", "delete"},
+			{"/", "filter"},
+			{"?", "other"},
+			{"q", "quit"},
+		}
 	}
 	parts := make([]string, len(keys))
 	for i, k := range keys {
