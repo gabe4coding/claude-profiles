@@ -31,6 +31,19 @@ type ReposConfig struct {
 	Repos []RepoConfig `json:"repos"`
 }
 
+// MarketplacePlugin is one entry in .claude-plugin/marketplace.json.
+type MarketplacePlugin struct {
+	Name        string `json:"name"`
+	Source      string `json:"source"`               // relative path from repo root
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version,omitempty"`
+}
+
+// MarketplaceConfig is the on-disk shape of .claude-plugin/marketplace.json.
+type MarketplaceConfig struct {
+	Plugins []MarketplacePlugin `json:"plugins"`
+}
+
 // reposConfigPath / reposCacheDir are functions so CLAUDE_PROFILES_ROOT
 // overrides take effect immediately. reposProfileDir is the per-repo
 // directory we expect remote repos to publish profiles in.
@@ -282,6 +295,80 @@ func listCwdProfileLocations() []ProfileLocation {
 	return out
 }
 
+// loadMarketplace reads .claude-plugin/marketplace.json from root.
+// Returns nil on any error (missing file, bad JSON, etc.).
+func loadMarketplace(root string) *MarketplaceConfig {
+	data, err := os.ReadFile(filepath.Join(root, ".claude-plugin", "marketplace.json"))
+	if err != nil {
+		return nil
+	}
+	var mc MarketplaceConfig
+	if json.Unmarshal(data, &mc) != nil {
+		return nil
+	}
+	return &mc
+}
+
+// marketplaceLocations returns ProfileLocations for every valid plugin listed in
+// the marketplace.json at repoRoot. alias is "." for CWD, or the repo alias.
+func marketplaceLocations(repoRoot, alias string) []ProfileLocation {
+	mc := loadMarketplace(repoRoot)
+	if mc == nil {
+		return nil
+	}
+	var out []ProfileLocation
+	for _, plugin := range mc.Plugins {
+		dir := filepath.Join(repoRoot, filepath.FromSlash(plugin.Source))
+		if !isProfileDir(dir) {
+			continue
+		}
+		qid := plugin.Name
+		if alias != "." && alias != "" {
+			qid = alias + "/" + plugin.Name
+		}
+		out = append(out, ProfileLocation{
+			Name:        plugin.Name,
+			QualifiedID: qid,
+			JSONPath:    filepath.Join(dir, "profile.json"),
+			RepoAlias:   alias,
+		})
+	}
+	return out
+}
+
+// findCwdMarketplaceRoot walks up from the current working directory looking
+// for a .claude-plugin/marketplace.json file. Returns the directory that
+// contains .claude-plugin/, or "" if none is found.
+func findCwdMarketplaceRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".claude-plugin", "marketplace.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// listCwdMarketplaceProfiles returns profiles from a marketplace.json found
+// at or above the current working directory.
+func listCwdMarketplaceProfiles() []ProfileLocation {
+	root := findCwdMarketplaceRoot()
+	if root == "" {
+		return nil
+	}
+	locs := marketplaceLocations(root, ".")
+	sort.Slice(locs, func(i, j int) bool { return locs[i].Name < locs[j].Name })
+	return locs
+}
+
 // listRepoProfiles returns all profiles found in registered repos. Each repo
 // is expected to publish profiles under <repo-root>/.claude-profiles/<name>/profile.json.
 // For backward compatibility we also recognise <repo-root>/claude-profiles/…
@@ -292,30 +379,40 @@ func listRepoProfiles() []ProfileLocation {
 		return nil
 	}
 	var out []ProfileLocation
+	seen := make(map[string]bool)
 	for _, r := range cfg.Repos {
-		root := repoProfilesRoot(repoCachePath(r.URL))
-		if root == "" {
-			continue
-		}
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+		cacheRoot := repoCachePath(r.URL)
+
+		// Explicit .claude-profiles/ entries take priority over marketplace.
+		root := repoProfilesRoot(cacheRoot)
+		if root != "" {
+			entries, _ := os.ReadDir(root)
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				dir := filepath.Join(root, name)
+				if !isProfileDir(dir) {
+					continue
+				}
+				loc := ProfileLocation{
+					Name:        name,
+					QualifiedID: r.Alias + "/" + name,
+					JSONPath:    filepath.Join(dir, "profile.json"),
+					RepoAlias:   r.Alias,
+				}
+				seen[loc.QualifiedID] = true
+				out = append(out, loc)
 			}
-			name := e.Name()
-			dir := filepath.Join(root, name)
-			if !isProfileDir(dir) {
-				continue
+		}
+
+		// Marketplace plugins are additive; .claude-profiles/ wins on conflict.
+		for _, loc := range marketplaceLocations(cacheRoot, r.Alias) {
+			if !seen[loc.QualifiedID] {
+				seen[loc.QualifiedID] = true
+				out = append(out, loc)
 			}
-			out = append(out, ProfileLocation{
-				Name:        name,
-				QualifiedID: r.Alias + "/" + name,
-				JSONPath:    filepath.Join(dir, "profile.json"),
-				RepoAlias:   r.Alias,
-			})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].QualifiedID < out[j].QualifiedID })
@@ -349,6 +446,12 @@ func resolveProfileLocation(id string) (*ProfileLocation, error) {
 				return &loc, nil
 			}
 		}
+		for _, loc := range listCwdMarketplaceProfiles() {
+			if loc.Name == name {
+				loc.QualifiedID = id
+				return &loc, nil
+			}
+		}
 		return nil, fmt.Errorf("project profile not found: %s", id)
 	}
 	if strings.Contains(id, "/") {
@@ -371,6 +474,12 @@ func resolveProfileLocation(id string) (*ProfileLocation, error) {
 	}
 	// Project-local: .claude-profiles/ in or above CWD (local takes precedence)
 	for _, loc := range listCwdProfileLocations() {
+		if loc.Name == id {
+			return &loc, nil
+		}
+	}
+	// CWD marketplace plugins (fallback after .claude-profiles/)
+	for _, loc := range listCwdMarketplaceProfiles() {
 		if loc.Name == id {
 			return &loc, nil
 		}
@@ -419,11 +528,23 @@ func listAllLocations() ([]ProfileLocation, error) {
 	// Project-local profiles from .claude-profiles/ in/above CWD. When a
 	// user-level local profile shares the same name, both are shown: the
 	// project copy gets QualifiedID="./name" so they resolve independently.
+	cwdQIDs := make(map[string]bool)
 	for _, loc := range listCwdProfileLocations() {
 		if localSet[loc.Name] {
 			loc.QualifiedID = "./" + loc.Name
 		}
+		cwdQIDs[loc.QualifiedID] = true
 		out = append(out, loc)
+	}
+	// CWD marketplace plugins are additive; .claude-profiles/ wins on conflict.
+	for _, loc := range listCwdMarketplaceProfiles() {
+		if localSet[loc.Name] {
+			loc.QualifiedID = "./" + loc.Name
+		}
+		if !cwdQIDs[loc.QualifiedID] {
+			cwdQIDs[loc.QualifiedID] = true
+			out = append(out, loc)
+		}
 	}
 	out = append(out, listRepoProfiles()...)
 	return out, nil

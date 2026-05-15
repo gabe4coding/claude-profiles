@@ -358,10 +358,32 @@ func loadProfileAt(path string) (*Profile, error) {
 		}
 	}
 
+	// Fall back to .claude-plugin/plugin.json for description when profile.json
+	// doesn't carry one — covers marketplace plugins and standalone plugin dirs.
+	if p.Description == "" {
+		p.Description = pluginJSONDescription(filepath.Dir(path))
+	}
+
 	if p.McpServers == nil {
 		p.McpServers = map[string]ServerConfig{}
 	}
 	return &p, nil
+}
+
+// pluginJSONDescription reads the "description" field from
+// <profileRoot>/.claude-plugin/plugin.json, returning "" on any error.
+func pluginJSONDescription(profileRoot string) string {
+	data, err := os.ReadFile(filepath.Join(profileRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(data, &meta) != nil {
+		return ""
+	}
+	return meta.Description
 }
 
 // claudeFlags returns CLI flags derived from the profile.
