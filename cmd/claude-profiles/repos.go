@@ -224,7 +224,62 @@ type ProfileLocation struct {
 	Name        string // bare profile name (no alias prefix)
 	QualifiedID string // "name" for local, "alias/name" for repo
 	JSONPath    string // absolute path to profile.json
-	RepoAlias   string // empty for local
+	RepoAlias   string // empty for local; "." for project (CWD)
+}
+
+// findCwdProfilesDir walks up from the current working directory looking for a
+// .claude-profiles folder (the convention repos use to publish profiles). Returns
+// the absolute path of that folder, or "" if not found.
+func findCwdProfilesDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(dir, reposProfileDir)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// listCwdProfileLocations returns profiles found in .claude-profiles/ rooted at
+// (or above) the current working directory. These are "project-local" profiles
+// and use RepoAlias="." so callers can distinguish them from global local profiles.
+func listCwdProfileLocations() []ProfileLocation {
+	root := findCwdProfilesDir()
+	if root == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []ProfileLocation
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		jsonPath := filepath.Join(root, name, "profile.json")
+		if _, err := os.Stat(jsonPath); err != nil {
+			continue
+		}
+		out = append(out, ProfileLocation{
+			Name:        name,
+			QualifiedID: name,
+			JSONPath:    jsonPath,
+			RepoAlias:   ".",
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // listRepoProfiles returns all profiles found in registered repos. Each repo
@@ -301,22 +356,37 @@ func resolveProfileLocation(id string) (*ProfileLocation, error) {
 			JSONPath:    profilePath(id),
 		}, nil
 	}
+	// Project-local: .claude-profiles/ in or above CWD (local takes precedence)
+	for _, loc := range listCwdProfileLocations() {
+		if loc.Name == id {
+			return &loc, nil
+		}
+	}
 	return nil, fmt.Errorf("profile not found: %s", id)
 }
 
-// listAllLocations returns local + repo profiles, sorted with local first.
+// listAllLocations returns local + project + repo profiles, sorted with local first.
 func listAllLocations() ([]ProfileLocation, error) {
 	var out []ProfileLocation
 	localNames, err := listProfiles()
 	if err != nil {
 		return nil, err
 	}
+	localSet := make(map[string]bool, len(localNames))
 	for _, n := range localNames {
+		localSet[n] = true
 		out = append(out, ProfileLocation{
 			Name:        n,
 			QualifiedID: n,
 			JSONPath:    profilePath(n),
 		})
+	}
+	// Project-local profiles from .claude-profiles/ in/above CWD; skip names
+	// already present as global local profiles so there's no duplicate.
+	for _, loc := range listCwdProfileLocations() {
+		if !localSet[loc.Name] {
+			out = append(out, loc)
+		}
 	}
 	out = append(out, listRepoProfiles()...)
 	return out, nil

@@ -219,7 +219,10 @@ func cmdList() {
 			}
 		}
 		source := "[local]"
-		if loc.RepoAlias != "" {
+		switch {
+		case loc.RepoAlias == ".":
+			source = "[project]"
+		case loc.RepoAlias != "":
 			source = "[repo:" + loc.RepoAlias + "]"
 		}
 		var extras string
@@ -244,7 +247,10 @@ func cmdNew() {
 	if name == "" {
 		fatal(fmt.Errorf("name required"))
 	}
-	if profileExists(name) {
+
+	scope := pickScope() // "user" or "project"
+
+	if scope == "user" && profileExists(name) {
 		fatal(fmt.Errorf("profile %q already exists", name))
 	}
 
@@ -261,28 +267,33 @@ func cmdNew() {
 		if sname == "" {
 			break
 		}
-		addServer(p, name, sname)
-	}
-
-	if len(p.McpServers) == 0 {
-		fmt.Fprintln(os.Stderr, "No servers added — profile not saved.")
-		os.Exit(1)
+		addServer(p, sname)
 	}
 
 	configureSettings(p)
 
-	if err := saveProfile(name, p); err != nil {
-		fatal(err)
+	var savedPath string
+	if scope == "project" {
+		var err error
+		savedPath, err = saveProjectProfile(name, p)
+		if err != nil {
+			fatal(err)
+		}
+	} else {
+		if err := saveProfile(name, p); err != nil {
+			fatal(err)
+		}
+		savedPath = profilePath(name)
 	}
 	fmt.Fprintln(os.Stderr)
-	success("Profile %q saved with %d server(s) → %s", name, len(p.McpServers), profilePath(name))
+	success("Profile %q saved → %s", name, savedPath)
 
 	if confirm("Launch now?") {
 		cmdRun([]string{name})
 	}
 }
 
-func addServer(p *Profile, profileName, sname string) {
+func addServer(p *Profile, sname string) {
 	t := pickServerType()
 	var cfg ServerConfig
 
@@ -302,10 +313,10 @@ func addServer(p *Profile, profileName, sname string) {
 	p.McpServers[sname] = cfg
 	success("  + Added: %s", sname)
 
-	probeAndFilter(p, profileName, sname, cfg)
+	probeAndFilter(p, sname, cfg)
 }
 
-func probeAndFilter(p *Profile, profileName, sname string, cfg ServerConfig) {
+func probeAndFilter(p *Profile, sname string, cfg ServerConfig) {
 	fmt.Fprintf(os.Stderr, "  Fetching available tools from %q...\n", sname)
 
 	tools, err := FetchTools(cfg, sname)
@@ -320,9 +331,6 @@ func probeAndFilter(p *Profile, profileName, sname string, cfg ServerConfig) {
 
 	fmt.Fprintf(os.Stderr, "  %d tool(s) found.\n", len(tools))
 	selectToolFilter(p, sname, tools)
-
-	// Persist after each server in case user exits early
-	saveProfile(profileName, p)
 }
 
 // ── edit ──────────────────────────────────────────────────────────────────────

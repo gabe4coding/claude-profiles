@@ -281,11 +281,40 @@ func shortenCwd(cwd string) string {
 }
 
 func locationLabel(loc ProfileLocation) string {
-	source := styleInfo.Render("local")
-	if loc.RepoAlias != "" {
+	var source string
+	switch {
+	case loc.RepoAlias == ".":
+		source = styleInfo.Render("project")
+	case loc.RepoAlias != "":
 		source = styleInfo.Render("repo:" + loc.RepoAlias)
+	default:
+		source = styleInfo.Render("local")
 	}
 	return fmt.Sprintf("%-30s  %s", loc.QualifiedID, source)
+}
+
+// pickScope asks where to save a new profile: user (~/.claude-profiles) or
+// project (.claude-profiles/ in the current directory).
+func pickScope() string {
+	if !isTTY() {
+		raw := promptLine("Save to: (1) user  (2) project  [default: 1]: ")
+		if strings.TrimSpace(raw) == "2" {
+			return "project"
+		}
+		return "user"
+	}
+	cwd, _ := os.Getwd()
+	scope := "user"
+	err := runField(huh.NewSelect[string]().
+		Title("Save scope").
+		Description("User profiles are available everywhere; project profiles live in .claude-profiles/ and can be shared via the repo.").
+		Options(
+			huh.NewOption("user — ~/.claude-profiles/profiles/  (available everywhere)", "user"),
+			huh.NewOption(fmt.Sprintf("project — .claude-profiles/  in %s", shortenCwd(cwd)), "project"),
+		).
+		Value(&scope))
+	handleAbort(err)
+	return scope
 }
 
 // fitHeight returns a Height that caps the viewport for large lists (used only

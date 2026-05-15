@@ -147,6 +147,30 @@ func loadProfile(name string) (*Profile, error) {
 	return &p, nil
 }
 
+// saveProjectProfile writes a profile to .claude-profiles/<name>/profile.json
+// in (or above) the current working directory. Creates the directory if absent.
+// Returns the absolute path of the written file.
+func saveProjectProfile(name string, p *Profile) (string, error) {
+	root := findCwdProfilesDir()
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(cwd, reposProfileDir)
+	}
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, "profile.json")
+	return dst, os.WriteFile(dst, append(data, '\n'), 0o644)
+}
+
 // saveProfile writes a local profile to <profilesDir>/<name>/profile.json with
 // every field — including _settings — inline. Folder-only format keeps room
 // for future per-profile artifacts (CLAUDE.md, hooks, …) without changing the
