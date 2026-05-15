@@ -417,17 +417,29 @@ func loadProfileAt(path string) (*Profile, error) {
 		}
 	}
 
-	// When profile.json is absent, apply user prefs for all metadata fields.
+	// Apply user prefs. When profile.json is absent they are the authoritative
+	// source for every field. When profile.json is present, prefs still win for
+	// user-editable metadata (Isolated, Worktree, Prompts, Cwd) so that changes
+	// made via the edit menu take effect even on profiles that have a profile.json.
+	// Description and Settings are only taken from prefs when profile.json omits them.
+	prefs := loadProfilePrefs(filepath.Dir(path))
 	if !profileFileExists {
-		prefs := loadProfilePrefs(filepath.Dir(path))
 		p.Description = prefs.Description
-		p.Isolated = prefs.Isolated
-		p.Worktree = prefs.Worktree
-		p.Prompts = prefs.Prompts
-		p.Cwd = prefs.Cwd
 		if len(prefs.Settings) > 0 {
 			p.Settings = prefs.Settings
 		}
+	}
+	if prefs.Isolated {
+		p.Isolated = true
+	}
+	if prefs.Worktree {
+		p.Worktree = true
+	}
+	if len(prefs.Prompts) > 0 {
+		p.Prompts = prefs.Prompts
+	}
+	if prefs.Cwd != "" {
+		p.Cwd = prefs.Cwd
 	}
 
 	// Fall back to .claude-plugin/plugin.json for description (always last resort).
