@@ -305,29 +305,45 @@ func runHub() hubResult {
 	for _, pe := range pins {
 		pinMap[pe.ProfileID] = pe
 	}
-	sortLocationsWithPins(locs, loadRecents(), pins)
+	sortLocationsByRecency(locs, loadRecents())
 	running := runningByProfile()
 	bg := backgroundedByProfile()
-	items := make([]list.Item, len(locs))
-	for i, loc := range locs {
-		pe, pinned := pinMap[loc.QualifiedID]
-		pinnedPromptText := ""
-		if pinned && pe.PromptName != "" {
-			if p, err := loadProfileAt(loc.JSONPath); err == nil {
-				for _, pp := range p.Prompts {
-					if pp.Name == pe.PromptName {
-						pinnedPromptText = pp.Text
-						break
+
+	// Pinned profiles appear twice: once at the top as a quick-launch entry
+	// (with the associated prompt auto-selected on Enter) and again at their
+	// natural recency-sorted position so all prompts remain accessible.
+	var items []list.Item
+	for _, pe := range pins {
+		for _, loc := range locs {
+			if loc.QualifiedID != pe.ProfileID {
+				continue
+			}
+			pinnedPromptText := ""
+			if pe.PromptName != "" {
+				if p, err := loadProfileAt(loc.JSONPath); err == nil {
+					for _, pp := range p.Prompts {
+						if pp.Name == pe.PromptName {
+							pinnedPromptText = pp.Text
+							break
+						}
 					}
 				}
 			}
+			items = append(items, profileItem{
+				loc:              loc,
+				titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], true, pe.PromptName),
+				descStr:          hubDesc(loc),
+				pinnedPromptText: pinnedPromptText,
+			})
+			break
 		}
-		items[i] = profileItem{
-			loc:              loc,
-			titleStr:         hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], pinned, pe.PromptName),
-			descStr:          hubDesc(loc),
-			pinnedPromptText: pinnedPromptText,
-		}
+	}
+	for _, loc := range locs {
+		items = append(items, profileItem{
+			loc:      loc,
+			titleStr: hubTitle(loc, running[loc.QualifiedID], bg[loc.QualifiedID], false, ""),
+			descStr:  hubDesc(loc),
+		})
 	}
 
 	// Focused delegate: selected row highlighted coral.
@@ -388,23 +404,10 @@ func runHub() hubResult {
 	return final.result
 }
 
-// sortLocationsWithPins reorders locs so that pinned profiles come first (in
-// pin order), followed by remaining profiles sorted by recency. Profiles never
-// launched fall to the bottom in alphabetical order.
-func sortLocationsWithPins(locs []ProfileLocation, recents map[string]int64, pins []PinEntry) {
-	pinOrder := map[string]int{}
-	for i, pe := range pins {
-		pinOrder[pe.ProfileID] = i
-	}
+// sortLocationsByRecency reorders locs so the most-recently-launched profile
+// is first. Profiles that have never been launched fall to the bottom alphabetically.
+func sortLocationsByRecency(locs []ProfileLocation, recents map[string]int64) {
 	sort.SliceStable(locs, func(i, j int) bool {
-		pi, iIsPinned := pinOrder[locs[i].QualifiedID]
-		pj, jIsPinned := pinOrder[locs[j].QualifiedID]
-		if iIsPinned && jIsPinned {
-			return pi < pj
-		}
-		if iIsPinned != jIsPinned {
-			return iIsPinned
-		}
 		ti, hasI := recents[locs[i].QualifiedID]
 		tj, hasJ := recents[locs[j].QualifiedID]
 		if hasI && hasJ {
