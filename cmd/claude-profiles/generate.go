@@ -78,9 +78,19 @@ Plugin vs MCP heuristics:
 Before enabling any plugin, WebFetch the marketplace index to confirm the plugin name exists exactly.
 
 Useful references (fetch if unsure about schema or availability):
-- https://docs.claude.com/en/docs/claude-code/mcp — MCP config schema
-- https://docs.claude.com/en/docs/claude-code/settings — settings.json full schema (sandbox is nested: filesystem + network sub-objects)
+
+Settings and MCP:
+- https://docs.claude.com/en/docs/claude-code/settings — full settings.json schema including sandbox, env, hooks, statusLine, and all advanced keys
+- https://docs.claude.com/en/docs/claude-code/mcp — MCP config schema and auth patterns
 - https://docs.claude.com/en/docs/claude-code/plugins-reference — extraKnownMarketplaces + enabledPlugins keys
+
+Plugin content (commands / skills / agents / hooks):
+- https://docs.claude.com/en/docs/claude-code/slash-commands — authoring slash commands (frontmatter, $ARGUMENTS, allowed-tools)
+- https://docs.claude.com/en/docs/claude-code/hooks — hook types (PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, Stop) and shell contract
+- https://docs.claude.com/en/docs/claude-code/sub-agents — authoring agent definitions
+- https://docs.claude.com/en/docs/claude-code/skills-and-skills — skills frontmatter and invocation
+
+MCP discovery:
 - https://github.com/modelcontextprotocol/servers — MCP server directory
 - https://github.com/punkpeye/awesome-mcp-servers — community MCP list
 
@@ -180,6 +190,12 @@ Key rules:
 - **permissions.deny** — MCP tools follow the ` + "`mcp__<server>__<tool>`" + ` pattern. List only what needs to be blocked.
 - **env** — placeholder ` + "`\"\"`" + ` values for API keys the user must fill in.
 - **plugins** — both ` + "`extraKnownMarketplaces`" + ` AND ` + "`enabledPlugins`" + ` are required to activate a plugin; only enable plugins that materially serve the intent.
+
+---
+
+## Optional: Bundle plugin content into the profile
+
+A profile directory is itself a Claude Code plugin: if the user asks for slash commands, skills, agents, or hooks specific to this profile, create the corresponding ` + "`commands/`" + `, ` + "`skills/`" + `, ` + "`agents/`" + `, or ` + "`hooks/`" + ` subdirectories alongside the three core files. The runner loads them automatically via ` + "`--plugin-dir`" + `. Fetch the relevant doc pages from Step 3 for the exact file format. Only create plugin content the intent genuinely calls for.
 
 # Step 6 — report
 
