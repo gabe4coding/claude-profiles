@@ -764,14 +764,12 @@ func bootstrapTmuxIfNeeded(sessionName string, innerArgs []string) {
 }
 
 // supportsTmuxControlMode reports whether the host terminal speaks tmux's
-// control-mode protocol (-CC). Currently iTerm2 and Warp implement it; other
-// terminals would dump raw "%output …" control messages to the screen.
+// control-mode protocol (-CC). Only iTerm2 implements it natively; Warp
+// advertises tmux integration but does NOT consume -CC output and instead
+// dumps the raw control-mode escapes to the screen (verified empirically).
+// Other terminals would do the same.
 func supportsTmuxControlMode() bool {
-	switch os.Getenv("TERM_PROGRAM") {
-	case "iTerm.app", "WarpTerminal":
-		return true
-	}
-	return false
+	return os.Getenv("TERM_PROGRAM") == "iTerm.app"
 }
 
 // tmuxSessionName picks a deterministic session name from the first positional
