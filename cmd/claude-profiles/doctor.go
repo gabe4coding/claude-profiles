@@ -34,6 +34,7 @@ func cmdDoctor() {
 	checks := []docCheck{}
 	checks = append(checks, checkClaudeBinary())
 	checks = append(checks, checkClaudeProfilesPath())
+	checks = append(checks, checkTmux())
 	checks = append(checks, checkSwitchCommand())
 	checks = append(checks, checkProfilesDir())
 	checks = append(checks, checkAllProfiles()...)
@@ -119,6 +120,20 @@ func resolveSymlink(p string) string {
 		return p
 	}
 	return r
+}
+
+func checkTmux() docCheck {
+	if os.Getenv("CLAUDE_PROFILES_NO_TMUX") != "" {
+		return docCheck{"tmux", "ok", "disabled via --no-tmux / CLAUDE_PROFILES_NO_TMUX (/delegate unavailable)"}
+	}
+	path, err := exec.LookPath("tmux")
+	if err != nil {
+		return docCheck{"tmux", "warn", "not found in PATH — /delegate unavailable; run claude-profiles to be offered an install"}
+	}
+	if os.Getenv("TMUX") != "" {
+		return docCheck{"tmux", "ok", path + " (inside tmux session)"}
+	}
+	return docCheck{"tmux", "ok", path}
 }
 
 func checkSwitchCommand() docCheck {

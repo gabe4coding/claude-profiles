@@ -15,6 +15,17 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	// Strip --no-tmux globally: honour it via the env var that
+	// bootstrapTmuxIfNeeded already checks so it works for every subcommand.
+	var filtered []string
+	for _, a := range args {
+		if a == "--no-tmux" {
+			os.Setenv("CLAUDE_PROFILES_NO_TMUX", "1")
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
 	// Port any state written by older versions of the CLI to the new
 	// ~/.claude-profiles/ root + unified profile format. Idempotent.
 	migrateLegacyLayout()
@@ -840,6 +851,11 @@ Commands:
   repo remove <id>   Unregister a repo (by alias or URL) and delete cache
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
   help               Show this help
+
+Flags (any position):
+  --no-tmux          Skip tmux bootstrap even when tmux is installed.
+                     Also hides /delegate (which requires tmux).
+                     Equivalent to setting CLAUDE_PROFILES_NO_TMUX=1.
 
 Profiles directory: %s
   Override the whole root with: CLAUDE_PROFILES_ROOT=/path claude-profiles

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -443,10 +444,16 @@ func ensureSwitchSlashCommand() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, sc := range []struct{ name, body string }{
+	commands := []struct{ name, body string }{
 		{"handoff.md", switchSlashCommand},
-		{"delegate.md", delegateSlashCommand},
-	} {
+	}
+	if tmuxAvailable() {
+		commands = append(commands, struct{ name, body string }{"delegate.md", delegateSlashCommand})
+	} else {
+		// Remove any stale delegate.md so /delegate disappears from /help.
+		_ = os.Remove(filepath.Join(dir, "delegate.md"))
+	}
+	for _, sc := range commands {
 		path := filepath.Join(dir, sc.name)
 		if cur, err := os.ReadFile(path); err != nil || string(cur) != sc.body {
 			if err := os.WriteFile(path, []byte(sc.body), 0o644); err != nil {
@@ -457,18 +464,21 @@ func ensureSwitchSlashCommand() error {
 	// Bundled helper scripts the slash commands invoke via ${CLAUDE_PLUGIN_ROOT}.
 	// Keeps the slash-command bodies short and the orchestration logic auditable
 	// (and unit-testable) as plain bash. chmod 0o755 so they're executable.
-	scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
-	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
-		return err
-	}
-	for _, s := range []struct{ name, body string }{
-		{"delegate-launch.sh", delegateLaunchScript},
-		{"delegate-watch.sh", delegateWatchScript},
-	} {
-		path := filepath.Join(scriptDir, s.name)
-		if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
-			if err := os.WriteFile(path, []byte(s.body), 0o755); err != nil {
-				return err
+	// Only written when tmux is available since the scripts are /delegate-only.
+	if tmuxAvailable() {
+		scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
+		if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+			return err
+		}
+		for _, s := range []struct{ name, body string }{
+			{"delegate-launch.sh", delegateLaunchScript},
+			{"delegate-watch.sh", delegateWatchScript},
+		} {
+			path := filepath.Join(scriptDir, s.name)
+			if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
+				if err := os.WriteFile(path, []byte(s.body), 0o755); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -514,6 +524,75 @@ func shortSession(id string) string {
 	return id
 }
 
+// tmuxAvailable reports whether tmux is on PATH and the user hasn't opted out.
+func tmuxAvailable() bool {
+	if os.Getenv("CLAUDE_PROFILES_NO_TMUX") != "" {
+		return false
+	}
+	_, err := exec.LookPath("tmux")
+	return err == nil
+}
+
+// offerTmuxInstall interactively proposes installing tmux when it is not found.
+// Returns true if tmux was successfully installed (caller can retry bootstrap).
+func offerTmuxInstall() bool {
+	installCmd := suggestTmuxInstallCmd()
+	info("tmux is not installed — /delegate needs it to open sub-sessions in new windows.")
+	if installCmd == "" {
+		info("Install tmux for your platform, then re-run claude-profiles.")
+		info("(Pass --no-tmux or set CLAUDE_PROFILES_NO_TMUX=1 to skip this prompt.)")
+		return false
+	}
+	info("Suggested: %s", installCmd)
+	if !confirm("Install tmux now?") {
+		info("Continuing without tmux. Pass --no-tmux to suppress this prompt.")
+		return false
+	}
+	parts := strings.Fields(installCmd)
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		warn("Install failed: %v", err)
+		return false
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		warn("tmux still not found after install.")
+		return false
+	}
+	success("tmux installed.")
+	return true
+}
+
+// suggestTmuxInstallCmd returns a best-guess install command for the current
+// platform, or "" when no package manager is detected.
+func suggestTmuxInstallCmd() string {
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := exec.LookPath("brew"); err == nil {
+			return "brew install tmux"
+		}
+		if _, err := exec.LookPath("port"); err == nil {
+			return "sudo port install tmux"
+		}
+	case "linux":
+		for _, pm := range []struct{ bin, cmd string }{
+			{"apt-get", "sudo apt-get install -y tmux"},
+			{"apt", "sudo apt install -y tmux"},
+			{"dnf", "sudo dnf install -y tmux"},
+			{"yum", "sudo yum install -y tmux"},
+			{"pacman", "sudo pacman -S --noconfirm tmux"},
+			{"zypper", "sudo zypper install -y tmux"},
+		} {
+			if _, err := exec.LookPath(pm.bin); err == nil {
+				return pm.cmd
+			}
+		}
+	}
+	return ""
+}
+
 // bootstrapTmuxIfNeeded re-execs the current process under `tmux new-session`
 // when stdin is a TTY and we're not already inside tmux. Refuses (silently
 // returns to normal flow) when:
@@ -539,7 +618,9 @@ func bootstrapTmuxIfNeeded(sessionName string, innerArgs []string) {
 	}
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
-		warn("tmux not on PATH — /delegate will refuse until you install tmux or run inside one. Set CLAUDE_PROFILES_NO_TMUX=1 to silence this.")
+		if offerTmuxInstall() {
+			bootstrapTmuxIfNeeded(sessionName, innerArgs)
+		}
 		return
 	}
 	self, err := os.Executable()
