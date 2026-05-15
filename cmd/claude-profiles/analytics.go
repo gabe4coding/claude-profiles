@@ -188,11 +188,11 @@ func cmdAnalytics(_ []string) {
 			peakColored = peakStr
 		}
 		cacheStr := fmt.Sprintf("%d%%", int(s.cacheHitRatio()*100))
-		fmt.Fprintf(os.Stderr, "  %s  %-22s %-22s %-18s %-7s %d\n",
+		fmt.Fprintf(os.Stderr, "  %s  %-22s %-22s %s%-7s %d\n",
 			shortID(s.SessionID),
 			truncate(s.Profile, 20),
 			truncate(s.Project, 20),
-			peakColored,
+			ansiPad(peakColored, 18),
 			cacheStr,
 			s.TurnCount)
 	}
@@ -236,7 +236,7 @@ func cmdAnalytics(_ []string) {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Per-Profile Cache Efficiency"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %-26s %8s %10s %10s %10s\n",
+	fmt.Fprintf(os.Stderr, "  %-26s %8s %10s %10s %-10s\n",
 		"Profile", "Sessions", "Avg Peak", "Max Peak", "Cache Hit")
 	fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 68)))
 
@@ -260,12 +260,12 @@ func cmdAnalytics(_ []string) {
 		default:
 			hitColored = styleSuccess.Render(hitStr)
 		}
-		fmt.Fprintf(os.Stderr, "  %-26s %8d %10s %10s %10s\n",
+		fmt.Fprintf(os.Stderr, "  %-26s %8d %10s %10s %s\n",
 			truncate(p.Profile, 24),
 			p.Sessions,
 			fmt.Sprintf("%dk", avgPeak/1000),
 			fmt.Sprintf("%dk", p.MaxPeak/1000),
-			hitColored)
+			ansiPad(hitColored, 10))
 	}
 
 	// ── Per-Project Totals ────────────────────────────────────────────────
@@ -305,7 +305,7 @@ func cmdAnalytics(_ []string) {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Per-Project Totals"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %-26s %8s %13s %10s %11s\n",
+	fmt.Fprintf(os.Stderr, "  %-26s %8s %13s %10s %-11s\n",
 		"Project", "Sessions", "Total Output", "Avg Peak", "Heavy(>80%)")
 	fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 68)))
 
@@ -318,12 +318,12 @@ func cmdAnalytics(_ []string) {
 		if p.HeavySessions > 0 {
 			heavyStr = styleWarn.Render(heavyStr)
 		}
-		fmt.Fprintf(os.Stderr, "  %-26s %8d %13s %10s %11s\n",
+		fmt.Fprintf(os.Stderr, "  %-26s %8d %13s %10s %s\n",
 			truncate(p.Project, 24),
 			p.Sessions,
 			fmt.Sprintf("%dk", p.TotalOutput/1000),
 			fmt.Sprintf("%dk", avgPeak/1000),
-			heavyStr)
+			ansiPad(heavyStr, 11))
 	}
 
 	// ── Recommendations ───────────────────────────────────────────────────
@@ -373,6 +373,16 @@ func cmdAnalytics(_ []string) {
 	}
 
 	fmt.Fprintln(os.Stderr)
+}
+
+// ansiPad right-pads s to width visual columns, accounting for ANSI escape
+// codes that fmt's %-Ns verb counts as printable but the terminal does not.
+func ansiPad(s string, width int) string {
+	vis := lipgloss.Width(s)
+	if vis >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-vis)
 }
 
 func countProjects(sessions []sessionMetrics) int {
