@@ -488,9 +488,6 @@ func claudeFlags(p *Profile, settingsPath string) []string {
 	}
 	if p.Worktree {
 		args = append(args, "--worktree")
-		if tmuxAvailable() {
-			args = append(args, "--tmux")
-		}
 	}
 	return args
 }
