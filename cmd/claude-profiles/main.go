@@ -381,68 +381,52 @@ func cmdEdit(args []string) {
 	if loc.RepoAlias != "" && loc.RepoAlias != "." {
 		fatal(fmt.Errorf("repo profiles are read-only — run: claude-profiles copy %s <local-name>", arg))
 	}
-	// Project profiles: open the folder in $EDITOR (no interactive menu).
-	if loc.RepoAlias == "." {
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = "vi"
-		}
-		cmd := exec.Command(editor, filepath.Dir(loc.JSONPath))
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fatal(err)
-		}
-		return
-	}
-	// Local profile: interactive edit menu (or $EDITOR fallback for non-TTY).
+	// Non-TTY fallback: open the profile folder directly in $EDITOR.
 	if !isTTY() {
-		openProfileInEditor(loc.Name)
+		openInEditor(filepath.Dir(loc.JSONPath))
 		return
 	}
-	runEditMenu(loc.Name)
+	runEditMenu(*loc)
 }
 
-func openProfileInEditor(name string) {
+func openInEditor(path string) {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, filepath.Join(profilesDir(), name))
+	cmd := exec.Command(editor, path)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fatal(err)
-	}
+	_ = cmd.Run()
 }
 
 // runEditMenu drives the interactive edit flow: per-server allow/deny tooling,
 // session settings, raw $EDITOR escape hatch. Loops until the user picks Done
 // (or aborts with Esc). State is reloaded from disk each iteration so the
 // $EDITOR branch picks up.
-func runEditMenu(name string) {
+func runEditMenu(loc ProfileLocation) {
+	dir := filepath.Dir(loc.JSONPath)
 	for {
-		p, err := loadProfileAt(profilePath(name))
+		p, err := loadProfileAt(loc.JSONPath)
 		if err != nil {
 			fatal(err)
 		}
-		action := pickEditAction(name, p)
+		action := pickEditAction(loc, p)
 		switch action {
 		case "tools":
-			manageToolFilters(p, name)
-			if err := saveProfile(name, p); err != nil {
+			manageToolFilters(p, loc)
+			if err := saveProfileAt(dir, p); err != nil {
 				fatal(err)
 			}
 		case "settings":
 			configureSettings(p)
-			if err := saveProfile(name, p); err != nil {
+			if err := saveProfileAt(dir, p); err != nil {
 				fatal(err)
 			}
 		case "isolated":
 			p.Isolated = !p.Isolated
-			if err := saveProfile(name, p); err != nil {
+			if err := saveProfileAt(dir, p); err != nil {
 				fatal(err)
 			}
 			state := "off"
@@ -451,11 +435,11 @@ func runEditMenu(name string) {
 			}
 			info("Isolated mode is now %s.", state)
 		case "prompts":
-			managePrompts(p, name)
+			managePrompts(p, loc)
 		case "plugin":
-			manageProfilePlugin(name)
+			manageProfilePlugin(loc)
 		case "editor":
-			openProfileInEditor(name)
+			openInEditor(dir)
 		case "done", "":
 			return
 		}

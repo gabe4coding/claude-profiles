@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -648,10 +647,10 @@ func shortToolName(full string) string {
 
 // ── Edit menu ─────────────────────────────────────────────────────────────────
 
-// pickEditAction renders the top-level edit menu for a local profile. Each
-// option label embeds a one-glance summary of the current state so the user
-// doesn't have to drill in to see what is set.
-func pickEditAction(name string, p *Profile) string {
+// pickEditAction renders the top-level edit menu for a profile. Each option
+// label embeds a one-glance summary of the current state so the user doesn't
+// have to drill in to see what is set.
+func pickEditAction(loc ProfileLocation, p *Profile) string {
 	servers := len(p.McpServers)
 	denied := len(p.DeniedTools)
 	toolsLabel := fmt.Sprintf("Manage MCP tool filters (%d server%s, %d denied)",
@@ -673,11 +672,7 @@ func pickEditAction(name string, p *Profile) string {
 	}
 	isolatedLabel := fmt.Sprintf("Isolated mode: %s (ignore user/project settings.json)", isolatedState)
 
-	loc, _ := resolveProfileLocation(name)
-	kinds := []string{}
-	if loc != nil {
-		kinds = profilePluginKinds(*loc)
-	}
+	kinds := profilePluginKinds(loc)
 	pluginSummary := "none"
 	if len(kinds) > 0 {
 		pluginSummary = strings.Join(kinds, ", ")
@@ -689,7 +684,7 @@ func pickEditAction(name string, p *Profile) string {
 
 	action := "tools"
 	err := runField(huh.NewSelect[string]().
-		Title("Edit " + name).
+		Title("Edit " + loc.QualifiedID).
 		Options(
 			huh.NewOption(toolsLabel, "tools"),
 			huh.NewOption(settingsLabel, "settings"),
@@ -709,11 +704,12 @@ func pickEditAction(name string, p *Profile) string {
 // protects existing filters from being wiped by a no-op pass. Esc returns to
 // the edit menu — there's no explicit "Back" option, since one default-
 // selected sentinel item would conflict with the natural first server choice.
-func manageToolFilters(p *Profile, name string) {
+func manageToolFilters(p *Profile, loc ProfileLocation) {
 	if len(p.McpServers) == 0 {
-		warn("No MCP servers in this profile — add one via `claude-profiles edit %s` → $EDITOR, or `new` from scratch.", name)
+		warn("No MCP servers in this profile — add one via `claude-profiles edit %s` → $EDITOR, or `new` from scratch.", loc.QualifiedID)
 		return
 	}
+	dir := filepath.Dir(loc.JSONPath)
 	for {
 		snames := make([]string, 0, len(p.McpServers))
 		for k := range p.McpServers {
@@ -737,7 +733,7 @@ func manageToolFilters(p *Profile, name string) {
 			return
 		}
 		reconfigureServerFilter(p, picked)
-		if err := saveProfile(name, p); err != nil {
+		if err := saveProfileAt(dir, p); err != nil {
 			fatal(err)
 		}
 	}
@@ -775,14 +771,10 @@ func reconfigureServerFilter(p *Profile, sname string) {
 // manageProfilePlugin offers to scaffold commands/, skills/, agents/, hooks/
 // folders inside the profile dir. The wrapper auto-detects them on next launch
 // and passes the profile folder via --plugin-dir; no further config needed.
-func manageProfilePlugin(name string) {
-	loc, err := resolveProfileLocation(name)
-	if err != nil {
-		fatal(err)
-	}
+func manageProfilePlugin(loc ProfileLocation) {
 	root := filepath.Dir(loc.JSONPath)
 	info("Profile folder: %s", root)
-	info("Existing plugin content: %s", strings.Join(profilePluginKinds(*loc), ", "))
+	info("Existing plugin content: %s", strings.Join(profilePluginKinds(loc), ", "))
 	info("Claude's --plugin-dir auto-discovers these subdirs:")
 	for _, sub := range pluginSubdirs {
 		exists := ""
@@ -811,15 +803,7 @@ func manageProfilePlugin(name string) {
 		case "commands", "skills", "agents", "hooks":
 			scaffoldPluginSubdir(root, picked)
 		case "open":
-			editor := os.Getenv("EDITOR")
-			if editor == "" {
-				editor = "vi"
-			}
-			cmd := exec.Command(editor, root)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			_ = cmd.Run()
+			openInEditor(root)
 		}
 	}
 }
@@ -900,7 +884,8 @@ func clearServerDeniedTools(p *Profile, sname string) {
 
 // managePrompts is the interactive sub-menu for adding, editing, and deleting
 // _prompts entries on a profile. Saves after each change; Esc returns to caller.
-func managePrompts(p *Profile, name string) {
+func managePrompts(p *Profile, loc ProfileLocation) {
+	dir := filepath.Dir(loc.JSONPath)
 	for {
 		opts := make([]huh.Option[string], 0, len(p.Prompts)+1)
 		for i, pr := range p.Prompts {
@@ -918,7 +903,7 @@ func managePrompts(p *Profile, name string) {
 			sel = "0"
 		}
 		err := runFieldBack(huh.NewSelect[string]().
-			Title(fmt.Sprintf("Manage prompts for %s (Esc to go back)", name)).
+			Title(fmt.Sprintf("Manage prompts for %s (Esc to go back)", loc.QualifiedID)).
 			Options(opts...).
 			Value(&sel))
 		if errors.Is(err, huh.ErrUserAborted) {
@@ -927,7 +912,7 @@ func managePrompts(p *Profile, name string) {
 
 		if sel == "add" {
 			if addPrompt(p) {
-				if err := saveProfile(name, p); err != nil {
+				if err := saveProfileAt(dir, p); err != nil {
 					fatal(err)
 				}
 			}
@@ -940,7 +925,7 @@ func managePrompts(p *Profile, name string) {
 			continue
 		}
 		if promptAction(p, idx) {
-			if err := saveProfile(name, p); err != nil {
+			if err := saveProfileAt(dir, p); err != nil {
 				fatal(err)
 			}
 		}
