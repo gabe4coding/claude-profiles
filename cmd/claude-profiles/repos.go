@@ -484,7 +484,63 @@ func resolveProfileLocation(id string) (*ProfileLocation, error) {
 			return &loc, nil
 		}
 	}
+	// Known project profiles from other repos (discovered via prefs store).
+	for _, loc := range listKnownProjectLocations() {
+		if loc.Name == id {
+			return &loc, nil
+		}
+	}
 	return nil, fmt.Errorf("profile not found: %s", id)
+}
+
+// listKnownProjectLocations returns profiles from every .claude-profiles/
+// directory recorded in the prefs store that is NOT inside the user's own
+// ~/.claude-profiles/ tree. This makes project profiles from other repos
+// discoverable when a session is launched from a different working directory.
+func listKnownProjectLocations() []ProfileLocation {
+	store := loadPrefsStore()
+	ownRoot := profilesRoot()
+	roots := map[string]bool{}
+	for dir := range store {
+		parent := filepath.Dir(dir)
+		if filepath.Base(parent) != reposProfileDir {
+			continue
+		}
+		if strings.HasPrefix(parent+string(filepath.Separator), ownRoot+string(filepath.Separator)) {
+			continue
+		}
+		roots[parent] = true
+	}
+	sortedRoots := make([]string, 0, len(roots))
+	for r := range roots {
+		sortedRoots = append(sortedRoots, r)
+	}
+	sort.Strings(sortedRoots)
+
+	var out []ProfileLocation
+	for _, root := range sortedRoots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			dir := filepath.Join(root, name)
+			if !isProfileDir(dir) {
+				continue
+			}
+			out = append(out, ProfileLocation{
+				Name:        name,
+				QualifiedID: name,
+				JSONPath:    filepath.Join(dir, "profile.json"),
+				RepoAlias:   ".",
+			})
+		}
+	}
+	return out
 }
 
 // isCwdUnder reports whether cwd equals or is nested under pinCwd.

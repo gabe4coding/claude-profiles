@@ -785,6 +785,18 @@ func cmdHookSessionStart() {
 
 	locs, err := listAllLocations()
 	if err == nil {
+		// Supplement with project profiles from other repos (prefs-store discovery),
+		// so sessions launched from a different CWD still see all configured profiles.
+		seen := map[string]bool{}
+		for _, loc := range locs {
+			seen[loc.QualifiedID] = true
+		}
+		for _, loc := range listKnownProjectLocations() {
+			if !seen[loc.QualifiedID] {
+				seen[loc.QualifiedID] = true
+				locs = append(locs, loc)
+			}
+		}
 		for _, loc := range locs {
 			p, _ := loadProfileAt(loc.JSONPath)
 			desc := ""
