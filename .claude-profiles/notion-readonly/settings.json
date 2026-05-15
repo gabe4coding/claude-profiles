@@ -1,6 +1,17 @@
 {
-  "model": "haiku",
+  "model": "sonnet",
   "permissions": {
-    "defaultMode": "auto"
+    "defaultMode": "auto",
+    "deny": [
+      "mcp__notion__notion-create-comment",
+      "mcp__notion__notion-create-database",
+      "mcp__notion__notion-create-pages",
+      "mcp__notion__notion-create-view",
+      "mcp__notion__notion-duplicate-page",
+      "mcp__notion__notion-move-pages",
+      "mcp__notion__notion-update-data-source",
+      "mcp__notion__notion-update-page",
+      "mcp__notion__notion-update-view"
+    ]
   }
 }
