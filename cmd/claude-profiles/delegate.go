@@ -450,21 +450,16 @@ func writeDelegateResult(dir, body string) {
 // the delegate's. That bug shipped — symptom: watcher emits parent's
 // activity, or nothing at all when parent is idle.
 func announceDelegateJSONLPath(before map[string]int64, delegateDir string) {
-	// snapshotSessionFiles keys by basename, not absolute path; we have to
-	// rejoin against encodedSessionsDir(cwd) here or the watcher receives a
-	// bare filename like "abc.jsonl" and fails its `wc -l < $JSONL` with
-	// "no such file or directory" in its own cwd.
-	cwd, _ := os.Getwd()
-	sessionsDir := encodedSessionsDir(cwd)
+	// snapshotSessionFiles keys by ABSOLUTE path, so we don't need to rejoin
+	// anything — the key is already the path the watcher should tail.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
 		now := snapshotSessionFiles()
-		for name := range now {
-			if _, existed := before[name]; existed {
+		for absPath := range now {
+			if _, existed := before[absPath]; existed {
 				continue
 			}
-			absPath := filepath.Join(sessionsDir, name)
 			_ = os.WriteFile(filepath.Join(delegateDir, "jsonl-path.txt"), []byte(absPath), 0o644)
 			return
 		}
@@ -571,13 +566,20 @@ func jsonlHasTurnDuration(path string) bool {
 // extractLastAssistantMessage is the post-run() fallback used by cmdDelegate
 // Runner after cmd.Run() returns. The watcher above handles the common case
 // (delegate stays alive in tmux); this still runs in case claude actually
-// exited and result.md hasn't been written yet.
+// exited and result.md hasn't been written yet. Scans every dir that could
+// hold the session (main + worktree subdirs) so worktree-launched delegates
+// still resolve correctly.
 func extractLastAssistantMessage(sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
-	cwd, _ := os.Getwd()
-	return extractLastAssistantFromFile(filepath.Join(encodedSessionsDir(cwd), sessionID+".jsonl"))
+	for _, dir := range sessionDirsToWatch() {
+		path := filepath.Join(dir, sessionID+".jsonl")
+		if _, err := os.Stat(path); err == nil {
+			return extractLastAssistantFromFile(path)
+		}
+	}
+	return ""
 }
 
 // extractLastAssistantFromFile is the underlying scanner used by both the

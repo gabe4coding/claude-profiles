@@ -347,10 +347,11 @@ func cmdRun(args []string) {
 }
 
 // snapshotSessionFiles records mtimes of every .jsonl session file across all
-// session dirs for the current cwd — including worktree subdirs. When claude
-// runs with --worktree it shifts its CWD into .claude/worktrees/<name>/ and
-// writes sessions to the corresponding encoded dir, which differs from the
-// wrapper's own CWD dir. sessionDirsToWatch covers both.
+// session dirs for the current cwd — including worktree subdirs. Keys are
+// ABSOLUTE paths so callers can distinguish files with the same basename
+// across dirs and resolve the actual file path directly without re-deriving it
+// from cwd (which may not match the dir the file lives in once --worktree is
+// involved).
 func snapshotSessionFiles() map[string]int64 {
 	out := map[string]int64{}
 	for _, dir := range sessionDirsToWatch() {
@@ -363,7 +364,7 @@ func snapshotSessionFiles() map[string]int64 {
 				continue
 			}
 			info, _ := e.Info()
-			out[e.Name()] = info.ModTime().UnixNano()
+			out[filepath.Join(dir, e.Name())] = info.ModTime().UnixNano()
 		}
 	}
 	return out
@@ -409,21 +410,25 @@ func sessionDirsToWatch() []string {
 
 // findNewOrUpdatedSession returns the session ID of the most-recently-modified
 // .jsonl that is either new or has a newer mtime than the "before" snapshot.
-// Returns "" if nothing matches.
+// Returns "" if nothing matches. Snapshot keys are absolute paths; the session
+// ID is the basename minus ".jsonl".
 func findNewOrUpdatedSession(before, after map[string]int64) string {
-	var newestName string
+	var newestPath string
 	var newestMtime int64
-	for name, mtime := range after {
-		prior, existed := before[name]
+	for path, mtime := range after {
+		prior, existed := before[path]
 		if existed && mtime <= prior {
 			continue
 		}
 		if mtime > newestMtime {
 			newestMtime = mtime
-			newestName = name
+			newestPath = path
 		}
 	}
-	return strings.TrimSuffix(newestName, ".jsonl")
+	if newestPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(newestPath), ".jsonl")
 }
 
 // projectSessionsDir returns the sessions dir for the current cwd.
