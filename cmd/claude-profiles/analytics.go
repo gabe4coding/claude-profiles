@@ -40,11 +40,10 @@ func modelPricing(model string) [5]float64 {
 }
 
 // modelContextWindow returns the context window size in tokens for a given model.
-// Sonnet 4.6, Opus 4.6, and Opus 4.7 support 1M tokens; others use 200k.
+// Opus 4.6 and Opus 4.7 support 1M tokens; all others (Sonnet, Haiku, older Opus) use 200k.
 func modelContextWindow(model string) int {
 	switch {
-	case strings.HasPrefix(model, "claude-sonnet-4-6"),
-		strings.HasPrefix(model, "claude-opus-4-6"),
+	case strings.HasPrefix(model, "claude-opus-4-6"),
 		strings.HasPrefix(model, "claude-opus-4-7"):
 		return 1_000_000
 	default:
@@ -76,22 +75,23 @@ func (m *modelUsage) cost(model string) float64 {
 
 // sessionMetrics holds derived stats for a single session file.
 type sessionMetrics struct {
-	SessionID        string
-	Cwd              string
-	Profile          string // qualified id, or "(no profile)"
-	Project          string // base name of cwd
-	TurnCount        int    // main-chain assistant turns (deduped by requestId)
-	TotalInput       int
-	TotalOutput      int
-	TotalCacheRead   int
-	TotalCacheWrite5m int
-	TotalCacheWrite1h int
-	PeakContext      int // max(input+cache_read+cache_create) across turns
-	ToolCallCount    int
-	SysPromptTokens  int // first turn's cache_read — pre-existing system cache
-	FirstTurnCtx     int // first turn's total context (system prompt + initial content)
-	ContextLimit     int // model-specific context window (200k or 1M)
-	ModelUsage       map[string]*modelUsage
+	SessionID           string
+	Cwd                 string
+	Profile             string // qualified id, or "(no profile)"
+	Project             string // base name of cwd
+	TurnCount           int    // main-chain assistant turns (deduped by requestId)
+	TotalInput          int
+	TotalOutput         int
+	TotalCacheRead      int
+	TotalCacheWrite5m   int
+	TotalCacheWrite1h   int
+	PeakContext         int // max(input+cache_read+cache_create) across turns
+	ToolCallCount       int
+	ToolResultTokensEst int // estimated tokens from tool_result content in user events
+	SysPromptTokens     int // first turn's cache_read — pre-existing system cache
+	FirstTurnCtx        int // first turn's total context (system prompt + initial content)
+	ContextLimit        int // model-specific context window (200k or 1M)
+	ModelUsage          map[string]*modelUsage
 }
 
 func (s *sessionMetrics) totalCost() float64 {
@@ -126,13 +126,23 @@ func (s sessionMetrics) sysPct() int {
 	return int(float64(s.SysPromptTokens) / float64(s.PeakContext) * 100)
 }
 
-// growthPct is the share of peak context added by conversation/tool accumulation
-// (everything beyond the first turn's initial context load).
-func (s sessionMetrics) growthPct() int {
-	if s.PeakContext == 0 || s.FirstTurnCtx >= s.PeakContext {
+// toolPct estimates the fraction of fresh content written to context that came
+// from tool results. Denominator is total cache-writes (fresh content added across
+// the session), so the value stays ≤ 100% regardless of session shape.
+func (s sessionMetrics) toolPct() int {
+	denom := s.TotalCacheWrite5m + s.TotalCacheWrite1h
+	if denom == 0 {
 		return 0
 	}
-	return int(float64(s.PeakContext-s.FirstTurnCtx) / float64(s.PeakContext) * 100)
+	return int(float64(s.ToolResultTokensEst) / float64(denom) * 100)
+}
+
+// burnRate returns the average context tokens consumed per turn (peak ÷ turns).
+func (s sessionMetrics) burnRate() int {
+	if s.TurnCount == 0 {
+		return 0
+	}
+	return s.PeakContext / s.TurnCount
 }
 
 type analyticsRawEvent struct {
@@ -145,20 +155,49 @@ type analyticsRawEvent struct {
 }
 
 type rawMessage struct {
+	Role  string `json:"role"`
 	Model string `json:"model"`
 	Usage struct {
 		InputTokens          int `json:"input_tokens"`
 		CacheReadInputTokens int `json:"cache_read_input_tokens"`
 		OutputTokens         int `json:"output_tokens"`
-		// CacheCreation sub-object has the 5m vs 1h breakdown.
 		CacheCreation struct {
 			Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
 			Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
 		} `json:"cache_creation"`
 	} `json:"usage"`
-	Content []struct {
-		Type string `json:"type"`
-	} `json:"content"`
+	Content []rawContentBlock `json:"content"`
+}
+
+// rawContentBlock is a single content item in a message — used for both
+// assistant (type=tool_use) and user (type=tool_result) events.
+type rawContentBlock struct {
+	Type    string          `json:"type"`
+	Text    string          `json:"text"`
+	Content json.RawMessage `json:"content"` // tool_result: string or []rawContentBlock
+}
+
+// estimateToolResultTokens estimates the token count of a tool_result content
+// value, which may be a plain JSON string or an array of text blocks.
+func estimateToolResultTokens(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	if raw[0] == '"' {
+		var s string
+		json.Unmarshal(raw, &s) //nolint:errcheck
+		return len(s) / 4
+	}
+	if raw[0] == '[' {
+		var blocks []rawContentBlock
+		json.Unmarshal(raw, &blocks) //nolint:errcheck
+		total := 0
+		for _, b := range blocks {
+			total += len(b.Text) / 4
+		}
+		return total
+	}
+	return 0
 }
 
 func parseSessionFile(path string) *sessionMetrics {
@@ -186,6 +225,16 @@ func parseSessionFile(path string) *sessionMetrics {
 		if m.Cwd == "" && ev.Cwd != "" {
 			m.Cwd = ev.Cwd
 		}
+		// Accumulate tool result sizes from user events.
+		if ev.Type == "user" && !ev.IsSidechain {
+			for _, block := range ev.Message.Content {
+				if block.Type == "tool_result" {
+					m.ToolResultTokensEst += estimateToolResultTokens(block.Content)
+				}
+			}
+			continue
+		}
+
 		// Only count main-chain assistant turns; subagent (isSidechain) traffic
 		// inflates per-turn numbers without reflecting the user's own context usage.
 		if ev.Type != "assistant" || ev.IsSidechain {
@@ -300,8 +349,8 @@ func cmdAnalytics(_ []string) {
 	amberStyle := lipgloss.NewStyle().Foreground(cdsAmber)
 	dimStyle := lipgloss.NewStyle().Foreground(cdsMuted)
 
-	sep := func() { fmt.Fprintln(os.Stderr, sepStyle.Render(strings.Repeat("─", 76))) }
-	dot := func() { fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 72))) }
+	sep := func() { fmt.Fprintln(os.Stderr, sepStyle.Render(strings.Repeat("─", 100))) }
+	dot := func() { fmt.Fprintln(os.Stderr, sepStyle.Render("  "+strings.Repeat("·", 96))) }
 
 	fmt.Fprintln(os.Stderr)
 	title("=== Context Window Analytics ===")
@@ -325,13 +374,19 @@ func cmdAnalytics(_ []string) {
 		}},
 		{"Peak / Sys%", []string{
 			"How full Claude's context window got at its busiest moment — shown as a",
-			"percentage of the model's limit (200k for Haiku, 1M for Sonnet/Opus).",
+			"percentage of the model's limit (200k for Sonnet/Haiku, 1M for Opus 4.6+).",
 			"Sys% = how much of that context is just setup/instructions (CLAUDE.md,",
 			"hooks). High Sys% means config is crowding out actual conversation.",
 		}},
-		{"Conv%", []string{
-			"Context consumed by the conversation and tool outputs as the session grew.",
-			"High is normal and healthy — it just means you had a long session.",
+		{"Tool%", []string{
+			"Estimated share of fresh context content that came from tool results",
+			"(file reads, bash output, search). High Tool% means a few large tool",
+			"calls are driving context pressure — read less or summarise results.",
+		}},
+		{"Burn/t", []string{
+			"Average context tokens consumed per turn (peak ÷ turns).",
+			"High burn means each exchange adds a lot of content — often caused by",
+			"large tool outputs or long assistant responses early in the session.",
 		}},
 		{"Cache Hit", []string{
 			"How often Claude reused already-processed content instead of re-reading it",
@@ -445,8 +500,8 @@ func cmdAnalytics(_ []string) {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, boldStyle.Render("Top Sessions by Peak Context"))
 	sep()
-	fmt.Fprintf(os.Stderr, "  %-10s %-20s %-16s %-17s %-6s %-5s %-7s %s\n",
-		"Session", "Profile", "Project", "Peak Context", "Cache", "Sys%", "Conv%", "Turns")
+	fmt.Fprintf(os.Stderr, "  %-9s %-17s %-14s %-17s %-6s %-5s %-6s %-7s %s\n",
+		"Session", "Profile", "Project", "Peak Context", "Cache", "Sys%", "Tool%", "Burn/t", "Turns")
 	dot()
 
 	limit := 10
@@ -455,7 +510,8 @@ func cmdAnalytics(_ []string) {
 	}
 	for _, s := range sessions[:limit] {
 		pct := s.peakPercent()
-		peakStr := fmt.Sprintf("%dk/%dk (%d%%)", s.PeakContext/1000, s.ContextLimit/1000, int(pct))
+		peakStr := fmt.Sprintf("%s/%s (%d%%)",
+			formatTokens(s.PeakContext), formatTokens(s.ContextLimit), int(pct))
 		var peakColored string
 		switch {
 		case pct >= 80:
@@ -478,15 +534,113 @@ func cmdAnalytics(_ []string) {
 			sysPctColored = dimStyle.Render(sysPctStr)
 		}
 
-		fmt.Fprintf(os.Stderr, "  %s  %-20s %-16s %s%-6s %s  %-7s %d\n",
-			shortID(s.SessionID),
-			truncate(s.Profile, 18),
-			truncate(s.Project, 14),
+		toolPctVal := s.toolPct()
+		toolPctStr := fmt.Sprintf("%d%%", toolPctVal)
+		var toolPctColored string
+		switch {
+		case toolPctVal >= 40:
+			toolPctColored = styleWarn.Render(toolPctStr)
+		case toolPctVal >= 20:
+			toolPctColored = amberStyle.Render(toolPctStr)
+		default:
+			toolPctColored = dimStyle.Render(toolPctStr)
+		}
+
+		fmt.Fprintf(os.Stderr, "  %-9s %-17s %-14s %s %-6s %s %s %-7s %d\n",
+			ansiPad(shortID(s.SessionID), 9),
+			truncate(s.Profile, 15),
+			truncate(s.Project, 12),
 			ansiPad(peakColored, 17),
 			fmt.Sprintf("%d%%", int(s.cacheHitRatio()*100)),
 			ansiPad(sysPctColored, 5),
-			fmt.Sprintf("%d%%", s.growthPct()),
+			ansiPad(toolPctColored, 6),
+			formatTokens(s.burnRate()),
 			s.TurnCount)
+	}
+
+	// ── Per-Project Stats ─────────────────────────────────────────────────
+
+	type projectStats struct {
+		Sessions          int
+		TotalTurns        int
+		TotalCacheRead    int
+		TotalCacheWrite5m int
+		TotalCacheWrite1h int
+		PeakSum           int
+		MaxPeak           int
+		TotalCost         float64
+	}
+	projectMap := map[string]*projectStats{}
+	for i := range sessions {
+		s := &sessions[i]
+		ps := projectMap[s.Project]
+		if ps == nil {
+			ps = &projectStats{}
+			projectMap[s.Project] = ps
+		}
+		ps.Sessions++
+		ps.TotalTurns += s.TurnCount
+		ps.TotalCacheRead += s.TotalCacheRead
+		ps.TotalCacheWrite5m += s.TotalCacheWrite5m
+		ps.TotalCacheWrite1h += s.TotalCacheWrite1h
+		ps.PeakSum += s.PeakContext
+		if s.PeakContext > ps.MaxPeak {
+			ps.MaxPeak = s.PeakContext
+		}
+		ps.TotalCost += s.totalCost()
+	}
+	type projectEntry struct {
+		Project string
+		*projectStats
+	}
+	var projectList []projectEntry
+	for k, v := range projectMap {
+		projectList = append(projectList, projectEntry{k, v})
+	}
+	sort.Slice(projectList, func(i, j int) bool {
+		return projectList[i].Sessions > projectList[j].Sessions
+	})
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, boldStyle.Render("Per-Project Stats"))
+	sep()
+	fmt.Fprintf(os.Stderr, "  %-22s %8s %6s %10s %10s %9s %8s %10s\n",
+		"Project", "Sessions", "Turns", "Avg Peak", "Max Peak", "Cache Hit", "Avg Burn", "Est. Cost")
+	dot()
+
+	for _, p := range projectList {
+		avgPeak := 0
+		if p.Sessions > 0 {
+			avgPeak = p.PeakSum / p.Sessions
+		}
+		avgBurn := 0
+		if p.TotalTurns > 0 {
+			avgBurn = p.PeakSum / p.TotalTurns
+		}
+		total := p.TotalCacheRead + p.TotalCacheWrite5m + p.TotalCacheWrite1h
+		hitRatio := 0.0
+		if total > 0 {
+			hitRatio = float64(p.TotalCacheRead) / float64(total) * 100
+		}
+		hitStr := fmt.Sprintf("%d%%", int(hitRatio))
+		var hitColored string
+		switch {
+		case hitRatio < 40:
+			hitColored = styleWarn.Render(hitStr)
+		case hitRatio < 65:
+			hitColored = amberStyle.Render(hitStr)
+		default:
+			hitColored = styleSuccess.Render(hitStr)
+		}
+		fmt.Fprintf(os.Stderr, "  %-22s %8d %6d %10s %10s %s %8s %10s\n",
+			truncate(p.Project, 20),
+			p.Sessions,
+			p.TotalTurns,
+			fmt.Sprintf("%dk", avgPeak/1000),
+			fmt.Sprintf("%dk", p.MaxPeak/1000),
+			ansiPad(hitColored, 9),
+			formatTokens(avgBurn),
+			fmt.Sprintf("$%.2f", p.TotalCost))
 	}
 
 	// ── Per-Profile Cache Efficiency ──────────────────────────────────────
@@ -618,6 +772,17 @@ func cmdAnalytics(_ []string) {
 	}
 	if bloatedSys > 0 {
 		warn("  %d session(s) have system prompt >30%% of peak context — review CLAUDE.md / hook output size", bloatedSys)
+		hasRecs = true
+	}
+
+	toolHeavy := 0
+	for _, s := range sessions {
+		if s.toolPct() >= 40 && s.PeakContext > 30_000 {
+			toolHeavy++
+		}
+	}
+	if toolHeavy > 0 {
+		warn("  %d session(s) have tool results >40%% of fresh context — consider reading less or summarising tool output", toolHeavy)
 		hasRecs = true
 	}
 
