@@ -324,13 +324,13 @@ func cmdAnalytics(_ []string) {
 			"'peak context × sessions'. It reflects your real API workload.",
 		}},
 		{"Peak / Sys%", []string{
-			"How full Claude's memory got at its busiest moment — shown as a",
+			"How full Claude's context window got at its busiest moment — shown as a",
 			"percentage of the model's limit (200k for Haiku, 1M for Sonnet/Opus).",
-			"Sys% = how much of that memory is just setup/instructions (CLAUDE.md,",
+			"Sys% = how much of that context is just setup/instructions (CLAUDE.md,",
 			"hooks). High Sys% means config is crowding out actual conversation.",
 		}},
 		{"Conv%", []string{
-			"Memory consumed by the conversation and tool outputs as the session grew.",
+			"Context consumed by the conversation and tool outputs as the session grew.",
 			"High is normal and healthy — it just means you had a long session.",
 		}},
 		{"Cache Hit", []string{
