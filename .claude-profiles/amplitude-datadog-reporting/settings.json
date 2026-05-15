@@ -1,7 +1,29 @@
 {
   "model": "sonnet",
   "permissions": {
-    "defaultMode": "default"
+    "defaultMode": "default",
+    "deny": [
+      "mcp__amplitude__add_comment",
+      "mcp__amplitude__create_cohort",
+      "mcp__amplitude__create_dashboard",
+      "mcp__amplitude__create_dashboard_subscription",
+      "mcp__amplitude__create_metric",
+      "mcp__amplitude__create_notebook",
+      "mcp__amplitude__edit_dashboard",
+      "mcp__amplitude__edit_dashboard_subscription",
+      "mcp__amplitude__edit_notebook",
+      "mcp__amplitude__replace_dashboard_properties",
+      "mcp__amplitude__save_chart_edits",
+      "mcp__amplitude__share_object",
+      "mcp__amplitude__subscribe_chart_alert",
+      "mcp__amplitude__track_ui_render_response",
+      "mcp__amplitude__update_ai_visibility_page_view_config",
+      "mcp__amplitude__update_chart_monitor",
+      "mcp__amplitude__update_custom_or_labeled_events",
+      "mcp__amplitude__update_event",
+      "mcp__amplitude__update_properties",
+      "mcp__amplitude__update_share_role"
+    ]
   },
   "sandbox": {
     "filesystem": {
