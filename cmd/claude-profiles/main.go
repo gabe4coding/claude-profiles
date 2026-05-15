@@ -131,6 +131,12 @@ func runHubAction(r hubResult) {
 		if rec != errHubBack {
 			panic(rec)
 		}
+		// Clear the normal screen so output from aborted sub-prompts (info lines,
+		// huh forms) doesn't accumulate when the hub re-enters alt-screen and
+		// the user triggers the same action again.
+		if isTTY() {
+			fmt.Fprint(os.Stderr, "\033[2J\033[H")
+		}
 	}()
 	switch r.action {
 	case actLaunch:
