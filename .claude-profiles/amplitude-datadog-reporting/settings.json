@@ -26,6 +26,7 @@
     ]
   },
   "sandbox": {
+    "enabled": true,
     "filesystem": {
       "denyWrite": ["~/.ssh", "~/.aws", "~/.config/gh"],
       "denyRead": ["~/.ssh/id_*"]
