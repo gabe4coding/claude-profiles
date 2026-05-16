@@ -124,6 +124,28 @@ If Yes, ask a follow-up to collect any extra ` + "`allowWrite`" + ` paths and ` 
 > Options: "Yes", "No"
 > If Yes, follow up to collect the prompt names and texts.
 
+**4i. Subagent mode** — only ask when the intent describes a single specialised role (e.g. "security reviewer", "release summariser", "PR triager"):
+> "Run this profile as a named subagent? The main thread will take that subagent's system prompt, tool list, and model — overriding 4c and 4d."
+> Options:
+> - "No — regular Claude Code main thread"
+> - "Yes — specify the subagent name"
+
+If Yes, ask a free-text follow-up for the subagent name. The subagent definition must exist in one of:
+- ` + "`~/.claude/agents/<name>.md`" + ` (user-level)
+- project ` + "`.claude/agents/<name>.md`" + `
+- this profile's own ` + "`agents/<name>.md`" + ` (Phase 6 plugin content)
+
+Verify the file before proceeding — if it doesn't exist, offer to draft it as part of Phase 6.
+
+**4j. Status line** — make the active profile visible in the bottom bar:
+> "Show this profile in Claude Code's status line?"
+> Options:
+> - "Yes — minimal (` + "`[<profile>] <model>`" + ` on one line)"
+> - "Yes — rich (profile + model + cwd + context %)"
+> - "No — inherit from user settings"
+
+For both Yes options, write a ` + "`statusLine`" + ` block in settings.json with a self-contained ` + "`jq`" + ` command that hardcodes the profile name at write time (no env var dependency). Reference: https://code.claude.com/docs/en/statusline for the stdin JSON shape.
+
 # Phase 5 — Name
 
 For new profiles only — propose a slug based on the intent (lowercase, hyphens, no spaces, no slashes, no leading dot; pattern: ` + "`[a-z0-9][a-z0-9-]*`" + `).
@@ -210,6 +232,7 @@ Omit the file entirely if no settings are needed. Only include keys that reflect
 ` + "```" + `json
 {
   "model": "haiku|sonnet|opus",
+  "agent": "<subagent-name>",
   "permissions": {
     "defaultMode": "default|acceptEdits|plan|bypassPermissions",
     "deny": ["mcp__<server>__<tool>"]
@@ -226,6 +249,10 @@ Omit the file entirely if no settings are needed. Only include keys that reflect
       "allowedDomains": ["*.example.com"]
     }
   },
+  "statusLine": {
+    "type": "command",
+    "command": "jq -r '\"[<profile-name>] \\(.model.display_name)\"'"
+  },
   "extraKnownMarketplaces": {
     "<name>": {"source": "github", "github": {"owner": "...", "repo": "..."}}
   },
@@ -235,6 +262,8 @@ Omit the file entirely if no settings are needed. Only include keys that reflect
 
 - **sandbox** — write this block when the user chose Yes in 4f. ` + "`\"enabled\": true`" + ` is REQUIRED to activate the sandbox; without it the rest of the block is inert. ` + "`filesystem`" + ` and ` + "`network`" + ` are nested sub-objects; do NOT flatten their keys to the top level. Always include the credential guards: ` + "`denyWrite:[\"~/.ssh\",\"~/.aws\",\"~/.config/gh\"]`" + `, ` + "`denyRead:[\"~/.ssh/id_*\"]`" + `. Merge any extra ` + "`allowWrite`" + ` paths and ` + "`allowedDomains`" + ` collected in 4f's follow-up.
 - **permissions.deny** — populate from 4g. MCP tool names follow ` + "`mcp__<server>__<tool>`" + `. Built-in tools use bare names (` + "`Bash`" + `, ` + "`Write`" + `, ` + "`Edit`" + `, ` + "`NotebookEdit`" + `).
+- **agent** — write this key only when the user chose Yes in 4i. The value is the subagent name (no ` + "`.md`" + ` extension). When set, the subagent's own ` + "`model`" + ` and ` + "`tools`" + ` fields supersede the top-level ` + "`model`" + ` and ` + "`permissions`" + ` here for the main thread.
+- **statusLine** — write this block when the user picked a Yes option in 4j. ` + "`type`" + ` is always ` + "`\"command\"`" + `. Hardcode the profile name into the printed string at write time (the profile knows its own name; no env var needed). Minimal layout: ` + "`jq -r '\"[<name>] \\(.model.display_name)\"'`" + `. Rich layout adds ` + "`\\(.workspace.current_dir | sub(\"^.*/\"; \"\"))`" + ` and ` + "`\\(.context_window.used_percentage // 0)%`" + `. Full stdin JSON shape: https://code.claude.com/docs/en/statusline
 - **plugins** — both ` + "`extraKnownMarketplaces`" + ` AND ` + "`enabledPlugins`" + ` are required; only include plugins confirmed in Phase 3.
 
 ---
