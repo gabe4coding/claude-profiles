@@ -34,5 +34,9 @@
     "network": {
       "allowedDomains": ["*.amplitude.com", "*.datadoghq.com", "*.datadoghq.eu"]
     }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "in=$(cat); dir=$(jq -r .workspace.project_dir <<<\"$in\"); bash \"$dir/.claude-profiles/amplitude-datadog-reporting/statusline.sh\" <<<\"$in\""
   }
 }
