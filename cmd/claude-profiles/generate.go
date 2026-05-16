@@ -104,7 +104,22 @@ Present every significant decision as an AskUserQuestion. Do not silently pick d
 > - "Blended — merge with user config (recommended)"
 > - "Isolated — only this profile's settings, nothing else"
 
-**4f. Quick-start prompts** — only ask if the intent suggests recurring entry points:
+**4f. Sandbox** — primary safety control for any profile that enables external tooling:
+> "Enable the Claude Code sandbox for this profile? (recommended when MCP servers or plugins are configured)"
+> Options:
+> - "Yes — restrict filesystem writes and network egress (recommended)"
+> - "No — full access"
+
+If Yes, ask a follow-up to collect any extra ` + "`allowWrite`" + ` paths and ` + "`network.allowedDomains`" + ` the profile actually needs (vendor domains found in Phase 3, scratch dirs, repo paths). The credential paths in the template below are denied unconditionally — do not ask about those.
+
+**4g. Tool deny-list** — least-privilege control, independent of the sandbox:
+> "Deny any tools outright? (writes ` + "`permissions.deny`" + ` in settings.json)"
+> Options:
+> - "None"
+> - "Deny destructive core tools (Bash, Write, Edit, NotebookEdit)"
+> - "Custom list" (free-text — names follow ` + "`Write`" + `, ` + "`Edit`" + `, ` + "`Bash`" + `, ` + "`mcp__<server>__<tool>`" + `)
+
+**4h. Quick-start prompts** — only ask if the intent suggests recurring entry points:
 > "Add quick-start prompts? (shown as a picker before each session)"
 > Options: "Yes", "No"
 > If Yes, follow up to collect the prompt names and texts.
@@ -126,21 +141,45 @@ Confirm with AskUserQuestion:
 
 For an UPDATE: Read each existing file first, then merge only what changed.
 
+A profile directory is recognised when it contains ANY of:
+- ` + "`.claude-plugin/plugin.json`" + ` — plain plugin layout (canonical)
+- ` + "`.mcp.json`" + `
+- ` + "`profile.json`" + ` — only when profile-specific metadata is needed
+
+Default to the plain-plugin layout. Only write ` + "`profile.json`" + ` when the user chose Isolated (4e), opted into worktree mode, or added quick-start prompts (4h). If none of those apply, skip the file entirely — the loader handles its absence.
+
 ---
 
-### ` + "`profile.json`" + ` — metadata only
+### ` + "`.claude-plugin/plugin.json`" + ` — plugin descriptor (always write)
 
 ` + "```" + `json
 {
-  "_description": "<one sentence: what this profile does>",
-  "_isolated": true,
-  "_prompts": [{"name": "<label>", "text": "<ready-to-send message>"}]
+  "name": "<profile-name>",
+  "description": "<one sentence: what this profile does>",
+  "version": "0.1.0"
 }
 ` + "```" + `
 
-- ` + "`_description`" + ` — required; one sentence.
+Canonical home for the description. ` + "`name`" + ` must match the directory name. Create the ` + "`.claude-plugin/`" + ` subdirectory if absent.
+
+---
+
+### ` + "`profile.json`" + ` — OPTIONAL, only when profile-specific metadata is needed
+
+Write this file ONLY when at least one of ` + "`_isolated`" + `, ` + "`_prompts`" + `, or ` + "`_worktree`" + ` is set. If every field below would be omitted, do NOT create the file.
+
+` + "```" + `json
+{
+  "_isolated": true,
+  "_prompts": [{"name": "<label>", "text": "<ready-to-send message>"}],
+  "_worktree": true
+}
+` + "```" + `
+
 - ` + "`_isolated`" + ` — include only when the user chose "Isolated" in 4e; omit otherwise.
-- ` + "`_prompts`" + ` — include only when the user said Yes in 4f.
+- ` + "`_prompts`" + ` — include only when the user said Yes in 4h.
+- ` + "`_worktree`" + ` — include only when the user opted into worktree mode.
+- ` + "`_description`" + ` — DO NOT set here; description lives in ` + "`.claude-plugin/plugin.json`" + `.
 - ` + "`_cwd`" + ` — NEVER set manually.
 - Omit null / empty / false fields.
 
@@ -177,6 +216,7 @@ Omit the file entirely if no settings are needed. Only include keys that reflect
   },
   "env": {"MY_API_KEY": ""},
   "sandbox": {
+    "enabled": true,
     "filesystem": {
       "allowWrite": ["<path>"],
       "denyWrite": ["~/.ssh", "~/.aws", "~/.config/gh"],
@@ -193,8 +233,8 @@ Omit the file entirely if no settings are needed. Only include keys that reflect
 }
 ` + "```" + `
 
-- **sandbox** — include whenever the profile touches external services or the filesystem. ` + "`filesystem`" + ` and ` + "`network`" + ` are nested sub-objects; do NOT flatten their keys to the top level. Always include: ` + "`denyWrite:[\"~/.ssh\",\"~/.aws\",\"~/.config/gh\"]`" + `, ` + "`denyRead:[\"~/.ssh/id_*\"]`" + `.
-- **permissions.deny** — MCP tool names follow ` + "`mcp__<server>__<tool>`" + `.
+- **sandbox** — write this block when the user chose Yes in 4f. ` + "`\"enabled\": true`" + ` is REQUIRED to activate the sandbox; without it the rest of the block is inert. ` + "`filesystem`" + ` and ` + "`network`" + ` are nested sub-objects; do NOT flatten their keys to the top level. Always include the credential guards: ` + "`denyWrite:[\"~/.ssh\",\"~/.aws\",\"~/.config/gh\"]`" + `, ` + "`denyRead:[\"~/.ssh/id_*\"]`" + `. Merge any extra ` + "`allowWrite`" + ` paths and ` + "`allowedDomains`" + ` collected in 4f's follow-up.
+- **permissions.deny** — populate from 4g. MCP tool names follow ` + "`mcp__<server>__<tool>`" + `. Built-in tools use bare names (` + "`Bash`" + `, ` + "`Write`" + `, ` + "`Edit`" + `, ` + "`NotebookEdit`" + `).
 - **plugins** — both ` + "`extraKnownMarketplaces`" + ` AND ` + "`enabledPlugins`" + ` are required; only include plugins confirmed in Phase 3.
 
 ---
@@ -205,12 +245,13 @@ A profile directory is itself a Claude Code plugin. If the intent calls for it, 
 
 # Phase 7 — Report
 
-After writing all files:
+After writing, list ONLY the files that were actually written (skip omitted lines):
 
 > **Profile ` + "`<name>`" + ` created** at ` + "`<dir>`" + `
-> - ` + "`profile.json`" + `: <description>
-> - ` + "`.mcp.json`" + `: <N> server(s): <names>
-> - ` + "`settings.json`" + `: <key settings, or "none">
+> - ` + "`.claude-plugin/plugin.json`" + `: <description>
+> - ` + "`.mcp.json`" + `: <N> server(s): <names>          ← omit if no servers
+> - ` + "`settings.json`" + `: <key settings>             ← omit if no settings
+> - ` + "`profile.json`" + `: <fields set>                ← omit if not written
 >
-> Use ` + "`/handoff <name>`" + ` to switch to this profile.
+> Use ` + "`/handoff <name>`" + ` to switch to this profile from inside a session, or pick it from the hub to launch a fresh one.
 `
