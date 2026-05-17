@@ -41,6 +41,12 @@ func main() {
 		}
 	}
 	args = filtered
+	// Completion feed runs before migration / auto-sync: TAB-driven invocations
+	// should stay cheap and side-effect-free.
+	if len(args) > 0 && args[0] == "_complete" {
+		cmdComplete(args[1:])
+		return
+	}
 	// Port any state written by older versions of the CLI to the new
 	// ~/.claude-profiles/ root + unified profile format. Idempotent.
 	migrateLegacyLayout()
@@ -92,6 +98,8 @@ func main() {
 		usage()
 	case "version", "--version":
 		fmt.Println(version)
+	case "completion":
+		cmdCompletion(args[1:])
 	default:
 		// Treat as profile name shorthand (supports "alias/name" too)
 		cmdRun(args)
@@ -1026,6 +1034,8 @@ Commands:
   repo list          Show registered repos and last sync status
   repo remove <id>   Unregister a repo (by alias or URL) and delete cache
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
+  completion <shell> Emit a shell completion script (bash or zsh).
+                       Wire up with: eval "$(claude-profiles completion zsh)"
   version            Print the binary version and exit
   help               Show this help
 
