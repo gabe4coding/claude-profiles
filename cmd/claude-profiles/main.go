@@ -90,6 +90,8 @@ func main() {
 		cmdCopy(args[1:])
 	case "help", "--help", "-h":
 		usage()
+	case "version", "--version":
+		fmt.Println(version)
 	default:
 		// Treat as profile name shorthand (supports "alias/name" too)
 		cmdRun(args)
@@ -1024,6 +1026,7 @@ Commands:
   repo list          Show registered repos and last sync status
   repo remove <id>   Unregister a repo (by alias or URL) and delete cache
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
+  version            Print the binary version and exit
   help               Show this help
 
 Flags (any position):
