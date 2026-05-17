@@ -1,0 +1,64 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+)
+
+// cmdExec resolves a profile and syscall.Execs into `claude` with the profile's
+// MCP config, settings, plugin dir, and name. No wrapper loop, no tmux
+// bootstrap, no /handoff or /delegate slash-command installs, no SessionStart
+// or UserPromptSubmit hooks, no pidfile / recents / ask-history writes — a
+// clean process replacement intended for CI and other non-interactive
+// automation where the wrapper machinery is overhead.
+//
+// User args are appended verbatim, so `-p "<prompt>"` and `--resume <id>`
+// pass straight through:
+//
+//	claude-profiles exec my-profile -p "do the thing"
+//	claude-profiles exec my-profile --resume <session-id>
+func cmdExec(args []string) {
+	if len(args) == 0 {
+		fatal(fmt.Errorf("usage: claude-profiles exec <profile> [claude-args...]"))
+	}
+	profile := args[0]
+	passThrough := args[1:]
+
+	loc, err := resolveProfileLocation(profile)
+	if err != nil {
+		fatal(err)
+	}
+	p, err := loadProfileAt(loc.JSONPath)
+	if err != nil {
+		fatal(err)
+	}
+
+	binary, err := exec.LookPath("claude")
+	if err != nil {
+		fatal(fmt.Errorf("claude not found in PATH"))
+	}
+
+	// Split-format profiles publish servers in .mcp.json; combined-format
+	// profiles inline them in profile.json. Point claude at whichever is on disk.
+	mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+	if _, statErr := os.Stat(mcpConfigPath); statErr != nil {
+		mcpConfigPath = loc.JSONPath
+	}
+
+	argv := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
+	// claudeFlags("") inlines p.Settings (no hook augmentation) and adds
+	// --setting-sources= / --worktree when the profile requests them.
+	argv = append(argv, claudeFlags(p, "")...)
+	if dir := pluginDirFor(*loc); dir != "" {
+		argv = append(argv, "--plugin-dir", dir)
+	}
+	argv = append(argv, "--name", loc.QualifiedID)
+	argv = append(argv, passThrough...)
+
+	if err := syscall.Exec(binary, argv, os.Environ()); err != nil {
+		fatal(err)
+	}
+}

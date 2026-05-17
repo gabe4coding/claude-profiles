@@ -69,7 +69,7 @@ _claude_profiles() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
 
-  local subcmds="launch list ls new create ask run doctor analytics stats probe edit delete rm export import copy cp repo completion help version"
+  local subcmds="launch list ls new create ask run exec doctor analytics stats probe edit delete rm export import copy cp repo completion help version"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
     profiles=$(claude-profiles _complete profiles 2>/dev/null)
@@ -79,7 +79,7 @@ _claude_profiles() {
 
   cmd="${COMP_WORDS[1]}"
   case "$cmd" in
-    launch|run|edit|delete|rm|export|probe)
+    launch|run|exec|edit|delete|rm|export|probe)
       profiles=$(claude-profiles _complete profiles 2>/dev/null)
       COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
       ;;
@@ -119,6 +119,7 @@ _claude_profiles() {
     'new:Create a profile'
     'ask:Classify a prompt and launch the best-fit profile'
     'run:Launch claude in the /handoff wrapper'
+    'exec:Replace this process with claude (no wrapper/tmux/hooks; for CI)'
     'doctor:Run sanity checks'
     'analytics:Context-window and cost stats'
     'probe:Probe MCP servers in a profile'
@@ -144,7 +145,7 @@ _claude_profiles() {
   fi
 
   case "${words[2]}" in
-    launch|run|edit|delete|rm|export|probe)
+    launch|run|exec|edit|delete|rm|export|probe)
       _describe -t profiles 'profile' profiles
       ;;
     copy|cp)

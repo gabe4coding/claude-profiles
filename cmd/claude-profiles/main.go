@@ -70,6 +70,8 @@ func main() {
 		cmdAsk(strings.Join(args[1:], " "))
 	case "run":
 		cmdRun(args[1:])
+	case "exec":
+		cmdExec(args[1:])
 	case "_hook-session-start":
 		cmdHookSessionStart()
 	case "_hook-prompt-submit":
@@ -1015,6 +1017,11 @@ Commands:
   run <profile>      Launch claude in a wrapper loop. Inside the session,
                        /switch <name> swaps profile and --resumes; bare
                        /switch opens the profile picker.
+  exec <profile>     Replace this process with claude, applying the profile's
+   [claude-args...]    flags. No wrapper loop, tmux, hooks, or pidfiles —
+                       suited to CI and other non-interactive automation.
+                       Args after the profile pass through to claude verbatim:
+                         claude-profiles exec my-profile -p "do the thing"
   doctor             Run sanity checks (claude binary, hook resolution,
                        profile JSON, stale marker, session dir) and report.
   analytics          Show context window usage stats: peak context per session,
