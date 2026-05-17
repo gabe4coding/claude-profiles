@@ -72,6 +72,8 @@ func main() {
 		cmdRun(args[1:])
 	case "exec":
 		cmdExec(args[1:])
+	case "show":
+		cmdShow(args[1:])
 	case "_hook-session-start":
 		cmdHookSessionStart()
 	case "_hook-prompt-submit":
@@ -1012,6 +1014,10 @@ Commands:
   (none)             Interactive hub: launch / new / edit / delete / export / import
   launch [name]      Launch claude with profile (local "name" or "repo-alias/name")
   list               List all profiles (local + repos)
+  show [name]        Print a human-readable detail view of one profile:
+                       source, MCP servers, deny-list, settings highlights
+                       (model, permission mode, sandbox, env vars, plugins,
+                       hooks, statusLine), flags, prompts, plugin content.
   new                Create a new profile interactively
   ask [prompt]       Classify a prompt to the best profile and launch it
   run <profile>      Launch claude in a wrapper loop. Inside the session,
