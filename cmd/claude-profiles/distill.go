@@ -71,7 +71,7 @@ func cmdHookStop() {
 		return
 	}
 
-	profileID := profileIDForRunningHook(input.SessionID)
+	profileID, startedAt := wrapperContextForHook(input.SessionID)
 	if profileID == "" {
 		return
 	}
@@ -89,7 +89,7 @@ func cmdHookStop() {
 		return
 	}
 
-	if !workingTreeHasNonClaudeChanges() {
+	if !sessionHasNonClaudeWork(startedAt) {
 		return
 	}
 
@@ -105,14 +105,15 @@ func cmdHookStop() {
 	fmt.Println(string(enc))
 }
 
-// profileIDForRunningHook resolves the active profile id for a hook firing
-// inside `claude-profiles run`. The wrapper exports CLAUDE_PROFILES_WRAPPER_PID
-// so its pidfile is the authoritative live source — more reliable than the
-// session→profile ledger, which depends on pollForSessionID having seen the
-// jsonl in time. Falls back to the ledger for hand-tested or detached cases.
+// wrapperContextForHook resolves the active profile id and wrapper start time
+// for a hook firing inside `claude-profiles run`. The wrapper exports
+// CLAUDE_PROFILES_WRAPPER_PID so its pidfile is the authoritative live source
+// — more reliable than the session→profile ledger, which depends on
+// pollForSessionID having seen the jsonl in time. Falls back to the ledger
+// for hand-tested or detached cases (no started_at available then).
 // Backfills the ledger when a mapping is recovered from the pidfile so the hub
 // and analytics keep working after the wrapper exits.
-func profileIDForRunningHook(sessionID string) string {
+func wrapperContextForHook(sessionID string) (profileID string, startedAt int64) {
 	if pid := os.Getenv("CLAUDE_PROFILES_WRAPPER_PID"); pid != "" {
 		if data, err := os.ReadFile(filepath.Join(runDirPath(), pid+".json")); err == nil {
 			var w RunningWrapper
@@ -120,18 +121,35 @@ func profileIDForRunningHook(sessionID string) string {
 				if sessionID != "" {
 					recordSessionProfile(sessionID, w.Profile)
 				}
-				return w.Profile
+				return w.Profile, w.StartedAt
 			}
 		}
 	}
-	return loadSessionProfiles()[sessionID]
+	return loadSessionProfiles()[sessionID], 0
 }
 
-// workingTreeHasNonClaudeChanges reports whether `git status --porcelain` shows
-// any modified/untracked path outside `.claude/`. Fail-open: when git is
-// unavailable or the cwd isn't a repo, return true so we don't silently lose
-// distillation in environments where the filter has no signal.
-func workingTreeHasNonClaudeChanges() bool {
+// sessionHasNonClaudeWork reports whether the session has touched any file
+// outside `.claude/` — checking both uncommitted (`git status --porcelain`)
+// and committed (`git log --since=<wrapper-start>`) changes. The committed
+// path is required because once the agent commits, status goes clean and the
+// uncommitted-only filter would silently skip distillation for substantive
+// sessions. sinceUnix=0 means the wrapper context wasn't available — the log
+// check is skipped and we fall back to the uncommitted view only.
+func sessionHasNonClaudeWork(sinceUnix int64) bool {
+	if uncommittedHasNonClaude() {
+		return true
+	}
+	if sinceUnix > 0 && committedHasNonClaudeSince(sinceUnix) {
+		return true
+	}
+	return false
+}
+
+// uncommittedHasNonClaude reports whether `git status --porcelain` shows any
+// modified/untracked path outside `.claude/`. Fail-open: when git is
+// unavailable or the cwd isn't a repo, return true so distillation isn't
+// silently lost in environments where the filter has no signal.
+func uncommittedHasNonClaude() bool {
 	out, err := exec.Command("git", "status", "--porcelain").Output()
 	if err != nil {
 		return true
@@ -141,11 +159,33 @@ func workingTreeHasNonClaudeChanges() bool {
 			continue
 		}
 		path := line[3:]
-		// Rename: "R  old -> new" — check the destination.
+		// Rename: "R  old -> new" — only the destination matters.
 		if i := strings.Index(path, " -> "); i >= 0 {
 			path = path[i+4:]
 		}
 		if !strings.HasPrefix(path, ".claude/") {
+			return true
+		}
+	}
+	return false
+}
+
+// committedHasNonClaudeSince reports whether any commit reachable from HEAD
+// with a commit date at or after sinceUnix touched a file outside `.claude/`.
+// Fail-closed on git error (returns false) — the uncommitted check is the
+// primary signal and has its own fail-open behaviour.
+func committedHasNonClaudeSince(sinceUnix int64) bool {
+	out, err := exec.Command("git", "log",
+		fmt.Sprintf("--since=@%d", sinceUnix),
+		"--name-only", "--pretty=", "HEAD").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ".claude/") {
 			return true
 		}
 	}
