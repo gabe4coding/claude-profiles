@@ -56,6 +56,10 @@ func main() {
 	// Runs ahead of any command so repo profiles seen by this invocation come
 	// from the freshest local cache. The sync itself completes async.
 	kickAutoSync()
+	// Check for a newer release and install it in the background. No-op for
+	// dev builds or when CLAUDE_PROFILES_NO_UPDATE is set. The update lands
+	// at the same binary path so the next invocation picks it up automatically.
+	kickAutoUpdate()
 
 	if len(args) == 0 {
 		cmdInteractive()
@@ -106,6 +110,8 @@ func main() {
 		cmdCopy(args[1:])
 	case "help", "--help", "-h":
 		usage()
+	case "update":
+		cmdUpdate()
 	case "version", "--version":
 		fmt.Println(version)
 	case "completion":
@@ -1134,6 +1140,9 @@ Commands:
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
   completion <shell> Emit a shell completion script (bash or zsh).
                        Wire up with: eval "$(claude-profiles completion zsh)"
+  update             Check for a newer version and install it immediately.
+                       Auto-update also runs in the background once per day.
+                       Set CLAUDE_PROFILES_NO_UPDATE=1 to opt out.
   version            Print the binary version and exit
   help               Show this help
 
