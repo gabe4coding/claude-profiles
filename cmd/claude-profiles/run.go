@@ -1184,6 +1184,7 @@ type WorktreeInfo struct {
 	Branch          string    // current git branch (empty if detached)
 	LastSessionID   string    // most-recently-modified session ID in this worktree, or ""
 	LastSessionTime time.Time // mtime of the session file, zero if none
+	Hint            string    // first user message from the last session, for display
 }
 
 // listExistingWorktrees returns all claude-managed worktrees for the current
@@ -1226,6 +1227,7 @@ func listExistingWorktrees() []WorktreeInfo {
 			Branch:          cur.branch,
 			LastSessionID:   sid,
 			LastSessionTime: st,
+			Hint:            hintFromSessionJSONL(sid, cur.path),
 		})
 		cur = struct{ path, branch string }{}
 	}

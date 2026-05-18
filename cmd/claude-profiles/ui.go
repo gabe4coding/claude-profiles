@@ -413,6 +413,9 @@ func pickWorktreeOrNew(
 		} else if bgSessionIDs[wt.LastSessionID] {
 			label += "  [bg]"
 		}
+		if wt.Hint != "" {
+			label += fmt.Sprintf(" — %q", wt.Hint)
+		}
 		opts = append(opts, huh.NewOption(label, wt.Name))
 	}
 
