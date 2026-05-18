@@ -131,6 +131,9 @@ func cmdRun(args []string) {
 	if err := ensureSwitchSlashCommand(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install /switch slash command: %v\n", err)
 	}
+	if err := ensureWrapperPluginHooks(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not install wrapper-plugin hooks: %v\n", err)
+	}
 
 	binary, err := exec.LookPath("claude")
 	if err != nil {
@@ -975,10 +978,14 @@ func gitOutput(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// runSettingsWithHook builds a settings.json file that combines the profile's
-// own settings with our SessionStart hook entry, and returns the path. The
-// merge appends our hook to any existing SessionStart hooks rather than
-// replacing them.
+// runSettingsWithHook writes the profile's settings JSON to a temp path and
+// returns the path. Hooks are NOT injected here — they live in the wrapper
+// plugin's hooks/hooks.json (see ensureWrapperPluginHooks) because Claude
+// Code 2.1.x reliably loads plugin hooks via --plugin-dir but does not always
+// register Stop / UserPromptSubmit hooks declared in a --settings file.
+//
+// The originalPath parameter is kept for callers that need to start from an
+// existing settings file on disk rather than the profile's inline Settings.
 func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 	settings := map[string]any{}
 	switch {
@@ -993,46 +1000,6 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 		settings = map[string]any{}
 	}
 
-	// Resolve "claude-profiles" via PATH at hook-fire time rather than baking
-	// in an absolute path — keeps the hook working across reinstalls / moves.
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-	}
-	existingSS, _ := hooks["SessionStart"].([]any)
-	hooks["SessionStart"] = append(existingSS, map[string]any{
-		"hooks": []map[string]any{
-			{"type": "command", "command": "claude-profiles _hook-session-start"},
-		},
-	})
-	if p.Worktree {
-		ss, _ := hooks["SessionStart"].([]any)
-		hooks["SessionStart"] = append(ss, map[string]any{
-			"hooks": []map[string]any{
-				{"type": "command", "command": "claude-profiles _hook-worktree-caches"},
-			},
-		})
-	}
-	// UserPromptSubmit fires on every user turn — we use it to drain pending
-	// /delegate results back into the parent session as additionalContext.
-	existingUP, _ := hooks["UserPromptSubmit"].([]any)
-	hooks["UserPromptSubmit"] = append(existingUP, map[string]any{
-		"hooks": []map[string]any{
-			{"type": "command", "command": "claude-profiles _hook-prompt-submit"},
-		},
-	})
-	// Stop fires when Claude wraps up the turn — we use it for session
-	// distillation when the active profile has _distill: "on". Injection is
-	// unconditional; the hook subcommand owns the on/off decision (env var,
-	// prefs, profile setting) and the pre-filter.
-	existingStop, _ := hooks["Stop"].([]any)
-	hooks["Stop"] = append(existingStop, map[string]any{
-		"hooks": []map[string]any{
-			{"type": "command", "command": "claude-profiles _hook-stop"},
-		},
-	})
-	settings["hooks"] = hooks
-
 	out := runSettingsPath()
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return "", err
@@ -1042,4 +1009,58 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// wrapperPluginHooksJSON is the canonical hooks file installed into the
+// wrapper plugin so the wrapper's per-event handlers (SessionStart,
+// UserPromptSubmit, Stop) fire on every claude-profiles-launched session.
+// The wrapper plugin is loaded via --plugin-dir, which is the only path
+// where Claude Code reliably registers Stop hooks. The handlers self-skip
+// when they have no work (e.g. _hook-worktree-caches outside a linked
+// worktree, _hook-stop when the active profile has _distill: "off").
+const wrapperPluginHooksJSON = `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-session-start"}
+        ]
+      },
+      {
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-worktree-caches"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-prompt-submit"}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-stop"}
+        ]
+      }
+    ]
+  }
+}
+`
+
+// ensureWrapperPluginHooks writes hooks/hooks.json into the wrapper plugin
+// directory. Called from cmdRun startup so the hooks file is always current
+// with the binary. Idempotent — only rewrites when content drifts.
+func ensureWrapperPluginHooks() error {
+	dir := filepath.Join(wrapperPluginPath(), "hooks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "hooks.json")
+	if cur, err := os.ReadFile(path); err == nil && string(cur) == wrapperPluginHooksJSON {
+		return nil
+	}
+	return os.WriteFile(path, []byte(wrapperPluginHooksJSON), 0o644)
 }
