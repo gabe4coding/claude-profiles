@@ -86,6 +86,10 @@ func main() {
 		cmdHookPromptSubmit()
 	case "_hook-worktree-caches":
 		cmdHookWorktreeCaches()
+	case "_hook-worktree-branch":
+		cmdHookWorktreeBranch()
+	case "_hook-guard-worktree-writes":
+		cmdHookGuardWorktreeWrites()
 	case "_hook-stop":
 		cmdHookStop()
 	case "_delegate-runner":
@@ -177,6 +181,49 @@ func runHubAction(r hubResult) {
 			info("· %s has a foreground wrapper (PID %d, cwd %s, started %s)",
 				r.profile, w.PID, w.Cwd, time.Unix(w.StartedAt, 0).Format("15:04:05"))
 		}
+
+		// For worktree-enabled profiles, show a dedicated worktree picker that
+		// lists existing worktrees (annotated with bg/live state) alongside a
+		// "[+ new worktree]" option. This replaces the bg-session picker so the
+		// user always resumes in the correct worktree context.
+		var isWorktreeProfile bool
+		if loc, err := resolveProfileLocation(r.profile); err == nil {
+			if p, _ := loadProfileAt(loc.JSONPath); p != nil {
+				isWorktreeProfile = p.Worktree
+			}
+		}
+		if isWorktreeProfile {
+			worktrees := listExistingWorktrees()
+			if len(worktrees) > 0 {
+				runningIDs := make(map[string]bool, len(runs))
+				for _, w := range runs {
+					if w.SessionID != "" {
+						runningIDs[w.SessionID] = true
+					}
+				}
+				choice := pickWorktreeOrNew(r.profile, worktrees, bgs, runningIDs)
+				if choice == nil {
+					return // user cancelled
+				}
+				if !choice.isNew {
+					launchInExistingWorktree(r.profile, choice.worktree)
+					return
+				}
+				// User chose "[+ new worktree]" — skip bg picker, launch fresh
+				if len(runs) > 0 && !confirm("Start a second instance in this terminal?") {
+					return
+				}
+				var extra []string
+				if r.prompt != "" {
+					extra = append(extra, r.prompt)
+				}
+				launchFromHub(r.profile, extra)
+				return
+			}
+			// No existing worktrees — fall through to bg picker (handles orphaned
+			// bg sessions whose worktrees were pruned) and then fresh launch.
+		}
+
 		if len(bgs) > 0 {
 			var chosen *BackgroundedSession
 			if len(bgs) == 1 {
@@ -384,6 +431,60 @@ func cmdNew() {
 
 	if confirm("Launch now?") {
 		launchFromHub(name, nil)
+	}
+}
+
+// launchInExistingWorktree opens an existing git worktree in a new tmux window
+// (or in-process when tmux is unavailable), resuming its last session if one
+// exists. The window cds into the worktree path and runs with
+// CLAUDE_PROFILES_WORKTREE_WINDOW=1 so the wrapper skips opening yet another
+// window. Because the cwd is a linked worktree, isLinkedWorktree() in cmdRun
+// suppresses the --worktree flag — claude runs in-place rather than creating
+// a new worktree.
+func launchInExistingWorktree(profile string, wt *WorktreeInfo) {
+	var extra []string
+	if wt.LastSessionID != "" {
+		extra = append(extra, "--resume", wt.LastSessionID)
+	}
+
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		warn("cannot locate own binary; launching in-place")
+		if err2 := os.Chdir(wt.Path); err2 == nil {
+			cmdRun(append([]string{profile}, extra...))
+		}
+		return
+	}
+
+	parts := []string{shellQuote(self), "run", shellQuote(profile)}
+	for _, a := range extra {
+		parts = append(parts, shellQuote(a))
+	}
+	innerCmd := fmt.Sprintf("cd %s && CLAUDE_PROFILES_WORKTREE_WINDOW=1 %s",
+		shellQuote(wt.Path), strings.Join(parts, " "))
+
+	// Append worktree slug to window name to distinguish multiple worktrees
+	// of the same profile from one another.
+	windowName := strings.NewReplacer("/", "-", ".", "-", ":", "-").Replace(profile) + "-" + wt.Name
+
+	if os.Getenv("TMUX") == "" {
+		if err2 := os.Chdir(wt.Path); err2 == nil {
+			cmdRun(append([]string{profile}, extra...))
+		}
+		return
+	}
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		if err2 := os.Chdir(wt.Path); err2 == nil {
+			cmdRun(append([]string{profile}, extra...))
+		}
+		return
+	}
+	if err := exec.Command(tmuxBin, "new-window", "-n", windowName, innerCmd).Run(); err != nil {
+		warn("Failed to open tmux window for worktree %s: %v — trying in-place", wt.Name, err)
+		if err2 := os.Chdir(wt.Path); err2 == nil {
+			cmdRun(append([]string{profile}, extra...))
+		}
 	}
 }
 

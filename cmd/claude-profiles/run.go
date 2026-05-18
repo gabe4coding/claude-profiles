@@ -177,6 +177,15 @@ func cmdRun(args []string) {
 			fatal(err)
 		}
 
+		// If the current directory is already a linked git worktree (e.g. the
+		// user resumed an existing worktree session), skip creating another one.
+		// Setting p.Worktree = false here affects only this loop iteration —
+		// the profile is reloaded fresh each time, and isLinkedWorktree() will
+		// still return true on subsequent iterations, so the flag stays suppressed.
+		if p.Worktree && isLinkedWorktree() {
+			p.Worktree = false
+		}
+
 		// On first launch: if the profile wants a worktree and we're already
 		// inside a tmux session, open a new tmux window so the worktree session
 		// gets its own pane while the full wrapper lifecycle stays intact inside
@@ -1002,6 +1011,265 @@ func cmdHookWorktreeCaches() {
 	}
 }
 
+// cmdHookGuardWorktreeWrites is the _hook-guard-worktree-writes PreToolUse
+// handler. When the current session is inside a linked git worktree it blocks:
+//   - Write/Edit operations targeting absolute paths inside the main repo but
+//     outside this worktree.
+//   - Bash commands that switch the working branch to main/master (which would
+//     collapse the worktree's isolation).
+//
+// It is a no-op outside worktrees so it adds negligible overhead to normal sessions.
+func cmdHookGuardWorktreeWrites() {
+	if !isLinkedWorktree() {
+		return // allow
+	}
+
+	topLevel, err := gitOutput("rev-parse", "--show-toplevel")
+	if err != nil {
+		return // allow on error
+	}
+	rawCommon, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return
+	}
+	cwd, _ := os.Getwd()
+	commonDir := rawCommon
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(cwd, commonDir)
+	}
+	mainRoot := filepath.Dir(filepath.Clean(commonDir))
+
+	var input struct {
+		ToolName  string `json:"tool_name"`
+		ToolInput struct {
+			FilePath string `json:"file_path"`
+			Command  string `json:"command"`
+		} `json:"tool_input"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		return // allow if input can't be parsed
+	}
+
+	sep := string(filepath.Separator)
+	switch input.ToolName {
+	case "Write", "Edit":
+		path := input.ToolInput.FilePath
+		if path == "" || !filepath.IsAbs(path) {
+			return // relative paths stay inside the worktree cwd — allow
+		}
+		// Block writes inside the main repo that are NOT inside this worktree
+		if strings.HasPrefix(path, mainRoot+sep) && !strings.HasPrefix(path, topLevel+sep) {
+			fmt.Fprintf(os.Stderr,
+				"Blocked: %s is outside this worktree (%s). Modify files inside the worktree only.\n",
+				path, topLevel)
+			os.Exit(2)
+		}
+
+	case "Bash":
+		if bashChangesToMainBranch(input.ToolInput.Command) {
+			fmt.Fprintf(os.Stderr,
+				"Blocked: switching to main/master is not allowed inside a worktree. "+
+					"You are on a dedicated branch. Commit your changes here instead of switching branches.\n")
+			os.Exit(2)
+		}
+	}
+}
+
+// bashChangesToMainBranch returns true when the shell command contains a git
+// checkout or switch that would change the current HEAD to main or master.
+func bashChangesToMainBranch(cmd string) bool {
+	for _, line := range strings.Split(cmd, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		for i, f := range fields {
+			if f != "git" || i+2 >= len(fields) {
+				continue
+			}
+			subCmd := fields[i+1]
+			if subCmd != "checkout" && subCmd != "switch" {
+				continue
+			}
+			// Walk past flag arguments to find the branch name
+			for j := i + 2; j < len(fields); j++ {
+				if strings.HasPrefix(fields[j], "-") {
+					continue
+				}
+				target := strings.TrimPrefix(fields[j], "origin/")
+				if target == "main" || target == "master" {
+					return true
+				}
+				break // first non-flag arg is the target, stop
+			}
+		}
+	}
+	return false
+}
+
+// cmdHookWorktreeBranch is the _hook-worktree-branch SessionStart handler.
+// When the current directory is a linked git worktree it injects
+// additionalContext telling the agent the actual current branch, since
+// Claude Code's gitStatus context is computed from the main working tree and
+// may show "main" even inside a worktree.
+func cmdHookWorktreeBranch() {
+	gitDir, err := gitOutput("rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return
+	}
+	rawCommon, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	commonDir := rawCommon
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(cwd, commonDir)
+	}
+	if filepath.Clean(gitDir) == filepath.Clean(commonDir) {
+		return // main working tree, not a linked worktree
+	}
+
+	branch, err := gitOutput("symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return
+	}
+
+	context := fmt.Sprintf(
+		"You are working in a git worktree. Current branch: %s\n"+
+			"IMPORTANT: The gitStatus shown in the system context may report 'main' as the current branch — that is wrong. "+
+			"You are on branch '%s', not 'main'. Do NOT commit to main. Commit only to '%s'.\n",
+		branch, branch, branch,
+	)
+	out := map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":     "SessionStart",
+			"additionalContext": context,
+		},
+	}
+	enc, _ := json.Marshal(out)
+	fmt.Println(string(enc))
+}
+
+// isLinkedWorktree reports whether the current directory is inside a linked
+// git worktree (as opposed to the main working tree).
+func isLinkedWorktree() bool {
+	gitDir, err := gitOutput("rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return false
+	}
+	rawCommon, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	commonDir := rawCommon
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(cwd, commonDir)
+	}
+	return filepath.Clean(gitDir) != filepath.Clean(commonDir)
+}
+
+// WorktreeInfo describes one of the git worktrees created by claude --worktree
+// and found under <repo>/.claude/worktrees/.
+type WorktreeInfo struct {
+	Name            string    // slug from .claude/worktrees/<name>
+	Path            string    // absolute path to the worktree directory
+	Branch          string    // current git branch (empty if detached)
+	LastSessionID   string    // most-recently-modified session ID in this worktree, or ""
+	LastSessionTime time.Time // mtime of the session file, zero if none
+}
+
+// listExistingWorktrees returns all claude-managed worktrees for the current
+// git repo (those located under <repo-root>/.claude/worktrees/), enriched
+// with the last session for each. Returns nil when not in a git repo or when
+// no such worktrees exist.
+func listExistingWorktrees() []WorktreeInfo {
+	repoRoot, err := gitOutput("rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil
+	}
+	worktreeBase := filepath.Join(repoRoot, ".claude", "worktrees")
+
+	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+
+	var worktrees []WorktreeInfo
+	var cur struct{ path, branch string }
+	flush := func() {
+		if cur.path == "" {
+			return
+		}
+		// Only keep worktrees under <repo>/.claude/worktrees/
+		if !strings.HasPrefix(cur.path, worktreeBase+"/") {
+			cur = struct{ path, branch string }{}
+			return
+		}
+		name := cur.path[len(worktreeBase)+1:]
+		// Skip the main working tree (shouldn't appear here, but be defensive)
+		if name == "" || strings.Contains(name, "/") {
+			cur = struct{ path, branch string }{}
+			return
+		}
+		sid, st := lastSessionForWorktreeDir(cur.path)
+		worktrees = append(worktrees, WorktreeInfo{
+			Name:            name,
+			Path:            cur.path,
+			Branch:          cur.branch,
+			LastSessionID:   sid,
+			LastSessionTime: st,
+		})
+		cur = struct{ path, branch string }{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "worktree "):
+			cur.path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			cur.branch = strings.TrimPrefix(line, "branch refs/heads/")
+		}
+	}
+	flush()
+	return worktrees
+}
+
+// lastSessionForWorktreeDir finds the most-recently-modified session JSONL
+// file in the Claude Code projects directory that corresponds to worktreePath.
+// Returns the session ID and modification time, or ("", zero) if none found.
+func lastSessionForWorktreeDir(worktreePath string) (string, time.Time) {
+	dir := encodedSessionsDir(worktreePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", time.Time{}
+	}
+	var newestFile string
+	var newestTime time.Time
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, _ := e.Info()
+		if mt := info.ModTime(); mt.After(newestTime) {
+			newestTime = mt
+			newestFile = e.Name()
+		}
+	}
+	if newestFile == "" {
+		return "", time.Time{}
+	}
+	return strings.TrimSuffix(newestFile, ".jsonl"), newestTime
+}
+
 // gitOutput runs a git command and returns its trimmed stdout.
 func gitOutput(args ...string) (string, error) {
 	out, err := exec.Command("git", args...).Output()
@@ -1063,6 +1331,11 @@ const wrapperPluginHooksJSON = `{
         "hooks": [
           {"type": "command", "command": "claude-profiles _hook-worktree-caches"}
         ]
+      },
+      {
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-worktree-branch"}
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -1076,6 +1349,14 @@ const wrapperPluginHooksJSON = `{
       {
         "hooks": [
           {"type": "command", "command": "claude-profiles _hook-stop"}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {"type": "command", "command": "claude-profiles _hook-guard-worktree-writes"}
         ]
       }
     ]

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
@@ -366,6 +367,87 @@ func pickBackgroundedSession(profile string, bgs []BackgroundedSession) *Backgro
 		}
 	}
 	return nil
+}
+
+// worktreeChoice is the result of pickWorktreeOrNew. Exactly one of the fields
+// is set: isNew=true for a fresh worktree, or worktree for an existing one.
+type worktreeChoice struct {
+	isNew    bool
+	worktree *WorktreeInfo
+}
+
+// pickWorktreeOrNew shows a picker listing existing worktrees plus a "[+ new
+// worktree]" option. Sessions that are currently backgrounded are annotated
+// with [bg], and sessions running in a live wrapper are annotated with [live]
+// and excluded from selection (shown for reference only). Returns nil if the
+// user cancelled (Esc).
+func pickWorktreeOrNew(
+	profile string,
+	worktrees []WorktreeInfo,
+	bgs []BackgroundedSession,
+	runningSessionIDs map[string]bool,
+) *worktreeChoice {
+	if !isTTY() {
+		return &worktreeChoice{isNew: true}
+	}
+
+	// Build a session-id → bg mapping for annotation
+	bgSessionIDs := make(map[string]bool, len(bgs))
+	for _, b := range bgs {
+		bgSessionIDs[b.SessionID] = true
+	}
+
+	const newKey = "__new__"
+	opts := []huh.Option[string]{huh.NewOption("[+ new worktree]", newKey)}
+
+	for _, wt := range worktrees {
+		label := wt.Name
+		if wt.Branch != "" {
+			label += "  branch:" + wt.Branch
+		}
+		if !wt.LastSessionTime.IsZero() {
+			label += "  " + humanAge(wt.LastSessionTime)
+		}
+		if runningSessionIDs[wt.LastSessionID] {
+			label += "  [live]"
+		} else if bgSessionIDs[wt.LastSessionID] {
+			label += "  [bg]"
+		}
+		opts = append(opts, huh.NewOption(label, wt.Name))
+	}
+
+	selected := newKey
+	err := runFieldBack(huh.NewSelect[string]().
+		Title(fmt.Sprintf("%s — open an existing worktree or start a new one:", profile)).
+		Options(opts...).
+		Value(&selected))
+	if errors.Is(err, huh.ErrUserAborted) {
+		return nil
+	}
+	if selected == newKey || selected == "" {
+		return &worktreeChoice{isNew: true}
+	}
+	for i := range worktrees {
+		if worktrees[i].Name == selected {
+			return &worktreeChoice{worktree: &worktrees[i]}
+		}
+	}
+	return &worktreeChoice{isNew: true}
+}
+
+// humanAge returns a short human-readable string like "2h ago" for a past time.
+func humanAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 func shortenCwd(cwd string) string {
