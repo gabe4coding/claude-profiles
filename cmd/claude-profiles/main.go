@@ -80,6 +80,8 @@ func main() {
 		cmdHookPromptSubmit()
 	case "_hook-worktree-caches":
 		cmdHookWorktreeCaches()
+	case "_hook-stop":
+		cmdHookStop()
 	case "_delegate-runner":
 		cmdDelegateRunner(args[1:])
 	case "doctor":
@@ -548,6 +550,7 @@ func runEditMenu(loc ProfileLocation) {
 				Prompts:     p.Prompts,
 				Cwd:         p.Cwd,
 				Settings:    p.Settings,
+				Distill:     p.Distill,
 			})
 		}
 	} else {

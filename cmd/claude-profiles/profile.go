@@ -38,6 +38,11 @@ type ProfilePrefs struct {
 	// Settings is an optional user-side override for the profile's settings.json.
 	// When non-empty it replaces whatever settings the remote profile provides.
 	Settings json.RawMessage `json:"_settings,omitempty"`
+	// Distill, when "on", enables Stop-hook session distillation: at session end
+	// the wrapper asks Claude to record non-obvious findings to the right shared
+	// surface (CLAUDE.md, .claude/rules/, CLAUDE.local.md, or user-level). Empty
+	// or "off" disables it. Acts as a user-side override of the profile setting.
+	Distill string `json:"_distill,omitempty"`
 }
 
 // ProfilePrefsStore is the on-disk shape of ~/.claude-profiles/profile-prefs.json.
@@ -113,6 +118,12 @@ type Profile struct {
 	// The hub only shows it when os.Getwd() is equal to or under this path.
 	// Set automatically when promoting a repo profile to a local override.
 	Cwd string `json:"_cwd,omitempty"`
+	// Distill controls Stop-hook session distillation. "on" enables: at session
+	// end the wrapper asks Claude to record non-obvious findings to the right
+	// shared surface (CLAUDE.md, .claude/rules/, CLAUDE.local.md, or user-level).
+	// Empty or "off" disables. Default off — writes to committed surfaces are
+	// opt-in. Overridable via ProfilePrefs.Distill or DISTILL_ON_STOP=0 env var.
+	Distill string `json:"_distill,omitempty"`
 }
 
 // ── Settings (JSON map) helpers ──────────────────────────────────────────────
@@ -280,6 +291,7 @@ func saveProfileAt(dir string, p *Profile) error {
 		Worktree:    p.Worktree,
 		Prompts:     p.Prompts,
 		Cwd:         p.Cwd,
+		Distill:     p.Distill,
 	})
 }
 
@@ -440,6 +452,9 @@ func loadProfileAt(path string) (*Profile, error) {
 	}
 	if prefs.Cwd != "" {
 		p.Cwd = prefs.Cwd
+	}
+	if prefs.Distill != "" {
+		p.Distill = prefs.Distill
 	}
 
 	// Fall back to .claude-plugin/plugin.json for description (always last resort).

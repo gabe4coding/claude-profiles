@@ -1002,6 +1002,16 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 			{"type": "command", "command": "claude-profiles _hook-prompt-submit"},
 		},
 	})
+	// Stop fires when Claude wraps up the turn — we use it for session
+	// distillation when the active profile has _distill: "on". Injection is
+	// unconditional; the hook subcommand owns the on/off decision (env var,
+	// prefs, profile setting) and the pre-filter.
+	existingStop, _ := hooks["Stop"].([]any)
+	hooks["Stop"] = append(existingStop, map[string]any{
+		"hooks": []map[string]any{
+			{"type": "command", "command": "claude-profiles _hook-stop"},
+		},
+	})
 	settings["hooks"] = hooks
 
 	out := runSettingsPath()
