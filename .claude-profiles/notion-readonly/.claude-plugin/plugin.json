@@ -1,0 +1,5 @@
+{
+  "name": "notion-readonly",
+  "description": "Read-only Notion access — search, fetch, and inspect pages without write permissions",
+  "version": "0.1.0"
+}

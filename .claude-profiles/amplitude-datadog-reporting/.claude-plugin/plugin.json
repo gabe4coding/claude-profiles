@@ -1,0 +1,5 @@
+{
+  "name": "amplitude-datadog-reporting",
+  "description": "Read-only Amplitude and Datadog analytics reporting via MCP",
+  "version": "0.1.0"
+}
