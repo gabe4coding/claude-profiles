@@ -392,7 +392,7 @@ func cmdDelegateRunner(args []string) {
 		claudeArgs = append(claudeArgs, "--", req.Task)
 	}
 
-	before := snapshotSessionFiles(req.Dir)
+	before := snapshotAllSessionFiles()
 	cmd := exec.Command(binary, claudeArgs[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -420,7 +420,7 @@ func cmdDelegateRunner(args []string) {
 
 	_ = cmd.Run()
 
-	after := snapshotSessionFiles(req.Dir)
+	after := snapshotAllSessionFiles()
 	sessionID := findNewOrUpdatedSession(before, after)
 	result := extractLastAssistantMessage(sessionID, req.Dir)
 	if result == "" {
@@ -493,12 +493,15 @@ func writeDelegateResult(dir, body string) {
 // the delegate's. That bug shipped — symptom: watcher emits parent's
 // activity, or nothing at all when parent is idle.
 func announceDelegateJSONLPath(before map[string]int64, delegateDir, targetDir string) {
-	// snapshotSessionFiles keys by ABSOLUTE path, so we don't need to rejoin
-	// anything — the key is already the path the watcher should tail.
+	// snapshotAllSessionFiles keys by ABSOLUTE path, so we don't need to
+	// rejoin anything — the key is already the path the watcher should tail.
+	// We scan ALL project dirs (not just the target dir) because Claude may
+	// resolve a different effective CWD than cmd.Dir — e.g. git root or a
+	// worktree root — making the exact subdir hard to predict.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
-		now := snapshotSessionFiles(targetDir)
+		now := snapshotAllSessionFiles()
 		for absPath := range now {
 			if _, existed := before[absPath]; existed {
 				continue
