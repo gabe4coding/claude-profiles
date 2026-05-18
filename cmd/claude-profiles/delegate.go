@@ -30,7 +30,7 @@ import (
 //      context, and renames them to delivered.md so they're not re-injected.
 
 const delegateLaunchScript = `#!/bin/bash
-# Usage: delegate-launch.sh <profile-id> <task...>
+# Usage: delegate-launch.sh <profile-id> [--dir <path>] <task...>
 # Sets up a /delegate request, spawns the delegate in a new tmux window,
 # and prints DELEGATE_ID, DELEGATE_WINDOW, and DELEGATE_JSONL to stdout so
 # the parent agent can stream progress via delegate-watch.sh.
@@ -42,8 +42,19 @@ if [ -z "$TMUX" ]; then echo "/delegate requires tmux. Run claude-profiles insid
 if [ -z "$CLAUDE_PROFILES_WRAPPER_PID" ]; then echo "/delegate cannot find the wrapper PID. Restart your claude-profiles run wrapper to pick up the env var." >&2; exit 1; fi
 
 PROFILE="$1"; shift
+
+# Optional --dir <path>: resolve to absolute now, while we still have the
+# parent's cwd. The runner launches in a different tmux window with a
+# different inherited cwd, so relative paths would silently resolve wrong.
+REPO_DIR=""
+if [ "$1" = "--dir" ]; then
+  if [ -z "$2" ]; then echo "delegate-launch.sh: --dir requires a path argument" >&2; exit 1; fi
+  REPO_DIR=$(cd "$2" && pwd) || { echo "delegate-launch.sh: --dir path does not exist: $2" >&2; exit 1; }
+  shift 2
+fi
+
 TASK="$*"
-if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> <task...>" >&2; exit 1; fi
+if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--dir <path>] <task...>" >&2; exit 1; fi
 
 PARENT_SID=$(jq -r '.session_id // empty' "$HOME/.claude-profiles/run/${CLAUDE_PROFILES_WRAPPER_PID}.json" 2>/dev/null)
 if [ -z "$PARENT_SID" ]; then echo "/delegate cannot find the parent session id yet — wait a few seconds and retry." >&2; exit 1; fi
@@ -56,7 +67,8 @@ jq -nc \
   --arg task "$TASK" \
   --arg parent "$PARENT_SID" \
   --arg id "$DELG_ID" \
-  '{profile: $profile, task: $task, parent_session: $parent, delegate_id: $id}' \
+  --arg dir "$REPO_DIR" \
+  '{profile: $profile, task: $task, parent_session: $parent, delegate_id: $id, dir: $dir}' \
   > "$DIR/request.json"
 
 tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DELG_ID"
@@ -212,20 +224,25 @@ fi
 
 const delegateSlashCommand = `---
 description: Delegate an interactive subtask to another profile in a new tmux window. The delegate runs autonomously; progress streams back live and the final answer is read out of result.md immediately when the delegate finishes.
-argument-hint: <profile-id|intent> [task...]
+argument-hint: <profile-id|intent> [--dir <path>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
 The user typed ` + "`/delegate $ARGUMENTS`" + `.
 
 # 1. Pick profile + task
 
-Parse $ARGUMENTS. First whitespace-separated token = profile selector; rest = task body. If empty, ask the user with AskUserQuestion. If the profile selector is free-form intent, classify against the Available profiles list.
+Parse $ARGUMENTS:
+- First whitespace-separated token = profile selector (free-form intent → classify against Available profiles list).
+- If the next token is ` + "`--dir`" + `, the token after it is the target working directory; consume both.
+- Everything remaining = task body.
+
+If profile or task is empty, ask the user with AskUserQuestion.
 
 # 2. Launch
 
-Call the Bash tool, synchronously:
+Call the Bash tool, synchronously. Include ` + "`--dir <path>`" + ` only when a directory was provided:
 
-  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" "<task body...>"
+  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--dir "<path>"] "<task body...>"
 
 That script does all the bookkeeping (request file, tmux pane, env guards) and prints these lines to stdout:
 
@@ -380,6 +397,9 @@ func cmdDelegateRunner(args []string) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if req.Dir != "" {
+		cmd.Dir = req.Dir
+	}
 	// Mark the child so /handoff and /delegate inside the delegate refuse —
 	// nested delegation is intentionally not supported.
 	cmd.Env = append(os.Environ(), "CLAUDE_PROFILES_DELEGATE=1")
@@ -418,6 +438,7 @@ type delegateRequest struct {
 	Task          string `json:"task"`
 	ParentSession string `json:"parent_session"`
 	DelegateID    string `json:"delegate_id"`
+	Dir           string `json:"dir,omitempty"`
 }
 
 func findDelegateRequest(delegateID string) (string, delegateRequest) {
