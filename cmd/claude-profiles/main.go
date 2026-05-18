@@ -78,6 +78,8 @@ func main() {
 		cmdHookSessionStart()
 	case "_hook-prompt-submit":
 		cmdHookPromptSubmit()
+	case "_hook-worktree-caches":
+		cmdHookWorktreeCaches()
 	case "_delegate-runner":
 		cmdDelegateRunner(args[1:])
 	case "doctor":

@@ -878,6 +878,84 @@ func cmdHookSessionStart() {
 	fmt.Println(string(enc))
 }
 
+// worktreeCacheDirs is the list of well-known dependency-cache directories that
+// are safe to share across git worktrees via a symlink to the main working tree.
+// Omits dirs that store per-branch build artifacts (target, dist, .next, .venv)
+// or that embed absolute paths (Python virtualenvs).
+var worktreeCacheDirs = []string{
+	"node_modules",
+	"vendor",
+	".yarn/cache",
+	".pnpm-store",
+	"bower_components",
+	"Pods",
+}
+
+// cmdHookWorktreeCaches is the _hook-worktree-caches SessionStart handler.
+// When the current directory is a linked git worktree it symlinks any
+// worktreeCacheDirs that exist in the main working tree but are absent here,
+// so installs don't need to be repeated for every worktree.
+func cmdHookWorktreeCaches() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+
+	gitDir, err := gitOutput("rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return
+	}
+
+	// git-common-dir may be relative — resolve it to absolute.
+	rawCommon, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return
+	}
+	commonDir := rawCommon
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(cwd, commonDir)
+	}
+	commonDir = filepath.Clean(commonDir)
+
+	// In the main working tree both paths are the same; linked worktrees have
+	// a per-worktree gitDir under <common>/.git/worktrees/<name>.
+	if filepath.Clean(gitDir) == commonDir {
+		return
+	}
+
+	mainRoot := filepath.Dir(commonDir) // parent of <main>/.git
+
+	topLevel, err := gitOutput("rev-parse", "--show-toplevel")
+	if err != nil {
+		return
+	}
+
+	for _, rel := range worktreeCacheDirs {
+		src := filepath.Join(mainRoot, rel)
+		dst := filepath.Join(topLevel, rel)
+
+		if _, err := os.Stat(src); err != nil {
+			continue // not present in main repo
+		}
+		if _, err := os.Lstat(dst); err == nil {
+			continue // already exists in worktree
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			continue
+		}
+		_ = os.Symlink(src, dst)
+	}
+}
+
+// gitOutput runs a git command and returns its trimmed stdout.
+func gitOutput(args ...string) (string, error) {
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // runSettingsWithHook builds a settings.json file that combines the profile's
 // own settings with our SessionStart hook entry, and returns the path. The
 // merge appends our hook to any existing SessionStart hooks rather than
@@ -908,6 +986,14 @@ func runSettingsWithHook(p *Profile, originalPath string) (string, error) {
 			{"type": "command", "command": "claude-profiles _hook-session-start"},
 		},
 	})
+	if p.Worktree {
+		ss, _ := hooks["SessionStart"].([]any)
+		hooks["SessionStart"] = append(ss, map[string]any{
+			"hooks": []map[string]any{
+				{"type": "command", "command": "claude-profiles _hook-worktree-caches"},
+			},
+		})
+	}
 	// UserPromptSubmit fires on every user turn — we use it to drain pending
 	// /delegate results back into the parent session as additionalContext.
 	existingUP, _ := hooks["UserPromptSubmit"].([]any)
