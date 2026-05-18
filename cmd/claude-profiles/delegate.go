@@ -420,9 +420,46 @@ func cmdDelegateRunner(args []string) {
 
 	_ = cmd.Run()
 
-	after := snapshotAllSessionFiles()
-	sessionID := findNewOrUpdatedSession(before, after)
-	result := extractLastAssistantMessage(sessionID, req.Dir)
+	resultPath := filepath.Join(dir, "result.md")
+
+	// If the first-turn watcher (writeResultOnFirstTurnComplete) already wrote
+	// a result, keep it. Without this, the post-run fallback can OVERWRITE a
+	// good result with the error fallback below — e.g. when the session is in
+	// a directory the fallback's lookup can't reach (a worktree claude
+	// auto-created with a name unrelated to req.Dir).
+	if _, err := os.Stat(resultPath); err == nil {
+		fmt.Fprintln(os.Stderr)
+		info("Delegate %s done — result written to %s/result.md", delegateID, dir)
+		return
+	}
+
+	// Otherwise, fall back to finding the session ourselves. Prefer the
+	// absolute path from jsonl-path.txt (announce goroutine already filtered
+	// genuinely-new files); fall back to scanning all project dirs. Using the
+	// path directly avoids extractLastAssistantMessage's sessionDirsToWatch
+	// lookup, which can't find sessions in worktree dirs unrelated to req.Dir.
+	var sessionFile string
+	if data, err := os.ReadFile(filepath.Join(dir, "jsonl-path.txt")); err == nil {
+		sessionFile = strings.TrimSpace(string(data))
+	}
+	if sessionFile == "" {
+		after := snapshotAllSessionFiles()
+		var newestMtime int64
+		for path, mtime := range after {
+			if _, existed := before[path]; existed {
+				continue
+			}
+			if mtime > newestMtime {
+				newestMtime = mtime
+				sessionFile = path
+			}
+		}
+	}
+
+	var result string
+	if sessionFile != "" {
+		result = extractLastAssistantFromFile(sessionFile)
+	}
 	if result == "" {
 		result = "(delegate exited without a final assistant reply)"
 	}
