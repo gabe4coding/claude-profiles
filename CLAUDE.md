@@ -24,3 +24,6 @@ The first-turn watcher writes `result.md` via the absolute path in `jsonl-path.t
 
 **`ProfileLocation.OwnerRepo` enforces the workspace binding for delegates.**
 Set to the *main-tree* path of the repo whose `.claude-profiles/` the profile lives in — canonicalise with `mainRepoRoot()`, not `canonicalProfileDir()` (the latter doesn't handle bare worktree roots). User-level profiles and `alias/name` remote profiles have `OwnerRepo=""` (usable on any `--dir`). `cmdDelegateRunner` enforces the binding only when `p.Worktree && OwnerRepo != ""`, so any new profile discovery source that forgets to set `OwnerRepo` silently makes its profiles usable on any repo — defeating the workspace boundary.
+
+**Embedded `distill.md` and active `~/.claude-profiles/distill.md` are two copies.**
+`ensureDistillProcedureFile` writes the embedded default only when the on-disk file is absent — user hand-edits survive `claude-profiles upgrade` by design. Edits to `cmd/claude-profiles/distill.md` therefore don't reach the running hook until you either delete the on-disk copy or overwrite it. Before overwriting, diff against the previous embedded version (`git show HEAD:cmd/claude-profiles/distill.md`) to confirm the active copy has no user edits to preserve.
