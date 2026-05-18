@@ -5,6 +5,11 @@
 go build -o ~/.local/bin/claude-profiles ./cmd/claude-profiles/
 ```
 
+Remote install (repo is private — `GOPRIVATE` required):
+```
+GOPRIVATE=github.com/gabe4coding/claude-profiles go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
+```
+
 ## Non-obvious invariants
 
 **Profile prefs keys are main-repo absolute paths.**
