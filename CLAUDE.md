@@ -12,3 +12,6 @@ go build -o ~/.local/bin/claude-profiles ./cmd/claude-profiles/
 
 **`wrapperPluginHooksJSON` is idempotent by exact string match.**
 `ensureWrapperPluginHooks()` only rewrites `hooks.json` when the file content differs from the constant. Changes to the hook list take effect on the next `cmdRun` startup — already-running sessions loaded the old hooks at launch and won't see the update.
+
+**`Profile.Cwd` is hub-filtering only — not a delegate working directory.**
+It controls which profiles appear in the hub when `listAllLocations()` runs. `cmdDelegateRunner` never reads it. The delegate's working directory comes from `delegateRequest.Dir`, set via `/delegate --dir <path>` at call time and resolved to absolute in the launch script (before the runner's tmux window inherits a different cwd).
