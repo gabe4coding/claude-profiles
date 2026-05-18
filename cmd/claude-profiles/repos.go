@@ -238,6 +238,14 @@ type ProfileLocation struct {
 	QualifiedID string // "name" for local, "alias/name" for repo
 	JSONPath    string // absolute path to profile.json
 	RepoAlias   string // empty for local; "." for project (CWD)
+	// OwnerRepo is the absolute path of the repo that "owns" the profile —
+	// i.e. the directory containing the .claude-profiles/ subdir the profile
+	// lives in. Empty for user-level profiles (~/.claude-profiles/profiles/)
+	// and for profiles from registered remote repos (alias/name) — those are
+	// usable on any --dir. Non-empty for project-local profiles discovered in
+	// or above CWD or via the known-projects cache; for those, delegate-runner
+	// enforces that req.Dir is under OwnerRepo when the profile has _worktree.
+	OwnerRepo string
 }
 
 // findCwdProfilesDir walks up from the current working directory looking for a
@@ -270,6 +278,7 @@ func listCwdProfileLocations() []ProfileLocation {
 	if root == "" {
 		return nil
 	}
+	owner := mainRepoRoot(filepath.Dir(root)) // parent of .claude-profiles/, canonicalised across worktrees
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
@@ -289,6 +298,7 @@ func listCwdProfileLocations() []ProfileLocation {
 			QualifiedID: name,
 			JSONPath:    filepath.Join(dir, "profile.json"),
 			RepoAlias:   ".",
+			OwnerRepo:   owner,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -323,6 +333,12 @@ func marketplaceLocations(repoRoot, alias string) []ProfileLocation {
 			continue
 		}
 		qid := plugin.Name
+		// Owner is set ONLY for project-local marketplaces (alias=="."). For
+		// aliased remote repos, the profile is global ("works anywhere").
+		owner := ""
+		if alias == "." {
+			owner = mainRepoRoot(repoRoot)
+		}
 		if alias != "." && alias != "" {
 			qid = alias + "/" + plugin.Name
 		}
@@ -331,6 +347,7 @@ func marketplaceLocations(repoRoot, alias string) []ProfileLocation {
 			QualifiedID: qid,
 			JSONPath:    filepath.Join(dir, "profile.json"),
 			RepoAlias:   alias,
+			OwnerRepo:   owner,
 		})
 	}
 	return out
@@ -537,6 +554,7 @@ func listKnownProjectLocations() []ProfileLocation {
 				QualifiedID: name,
 				JSONPath:    filepath.Join(dir, "profile.json"),
 				RepoAlias:   ".",
+				OwnerRepo:   mainRepoRoot(filepath.Dir(root)), // parent of .claude-profiles/, canonicalised
 			})
 		}
 	}

@@ -113,6 +113,26 @@ func canonicalProfileDir(dir string) string {
 	return repoRoot + after[slash:] // repoRoot + /<relative-tail>
 }
 
+// mainRepoRoot strips a /.claude/worktrees/<name> segment from dir to recover
+// the main working tree's root. If dir isn't inside a worktree, returns dir
+// unchanged. Differs from canonicalProfileDir in that it works when dir IS
+// the worktree root itself (no trailing path), which is what we need for
+// OwnerRepo canonicalisation.
+func mainRepoRoot(dir string) string {
+	const marker = "/.claude/worktrees/"
+	idx := strings.Index(dir, marker)
+	if idx < 0 {
+		return dir
+	}
+	repoRoot := dir[:idx]
+	after := dir[idx+len(marker):]
+	slash := strings.Index(after, "/")
+	if slash < 0 {
+		return repoRoot // dir IS the worktree root — drop the whole segment
+	}
+	return repoRoot + after[slash:]
+}
+
 type Profile struct {
 	// Description explains why this profile exists. Shown in the hub list and
 	// in `claude-profiles list`. Optional — empty means "no rationale recorded".

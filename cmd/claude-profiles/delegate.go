@@ -327,6 +327,31 @@ func cmdDelegateRunner(args []string) {
 		fatal(err)
 	}
 
+	// Workspace binding: a project-local profile with _worktree:true is bound
+	// to its owning repo. Reject if --dir points elsewhere — otherwise we'd
+	// silently let one repo's profile mutate another's files. User-level and
+	// alias/name profiles have OwnerRepo="" so they're always allowed.
+	if p.Worktree && loc.OwnerRepo != "" {
+		target := req.Dir
+		if target == "" {
+			// No --dir means the delegate would run in the orchestrator's cwd,
+			// which is not the bound repo — reject.
+			msg := fmt.Sprintf("(delegate refused: profile %q is bound to %s and requires --dir to point there)", req.Profile, loc.OwnerRepo)
+			writeDelegateResult(dir, msg)
+			info("Delegate %s rejected — bound profile invoked without --dir", delegateID)
+			return
+		}
+		// Canonicalise target too: a worktree of the bound repo should count
+		// as "under" it, so /delegate <profile> --dir <some-worktree-of-owner>
+		// is accepted.
+		if !isCwdUnder(mainRepoRoot(target), loc.OwnerRepo) {
+			msg := fmt.Sprintf("(delegate refused: profile %q is bound to %s and cannot run on %s)", req.Profile, loc.OwnerRepo, target)
+			writeDelegateResult(dir, msg)
+			info("Delegate %s rejected — --dir %s is outside bound repo %s", delegateID, target, loc.OwnerRepo)
+			return
+		}
+	}
+
 	// We deliberately DON'T inject the SessionStart hook here: the delegate
 	// shouldn't see /handoff or /delegate in its profile list (it's a leaf).
 	settingsPath := ""

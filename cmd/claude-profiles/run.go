@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -958,13 +959,22 @@ func cmdHookSessionStart() {
 				locs = append(locs, loc)
 			}
 		}
-		for _, loc := range locs {
-			p, _ := loadProfileAt(loc.JSONPath)
-			desc := ""
-			if p != nil && strings.TrimSpace(p.Description) != "" {
-				desc = " — " + strings.TrimSpace(p.Description)
+
+		// Workspace mode: when CWD is NOT inside any repo with .claude-profiles/,
+		// group profiles by owning repo so the orchestrator knows which are
+		// usable anywhere vs which require --dir <owning repo>. Inside a single
+		// repo, keep the flat list (current behavior).
+		if findCwdProfilesDir() == "" {
+			writeGroupedProfileList(&sb, locs)
+		} else {
+			for _, loc := range locs {
+				p, _ := loadProfileAt(loc.JSONPath)
+				desc := ""
+				if p != nil && strings.TrimSpace(p.Description) != "" {
+					desc = " — " + strings.TrimSpace(p.Description)
+				}
+				sb.WriteString(fmt.Sprintf("- %s%s\n", loc.QualifiedID, desc))
 			}
-			sb.WriteString(fmt.Sprintf("- %s%s\n", loc.QualifiedID, desc))
 		}
 	}
 
@@ -976,6 +986,65 @@ func cmdHookSessionStart() {
 	}
 	enc, _ := json.Marshal(out)
 	fmt.Println(string(enc))
+}
+
+// writeGroupedProfileList renders the profile list grouped by owning repo for
+// workspace-mode SessionStart hooks. Profiles with empty OwnerRepo are listed
+// under "Common (usable on any --dir)". Project-local profiles are grouped by
+// the basename of their OwnerRepo; profiles with _worktree are annotated so
+// the orchestrator knows --dir is required.
+func writeGroupedProfileList(sb *strings.Builder, locs []ProfileLocation) {
+	type entry struct {
+		id       string
+		desc     string
+		needsDir bool
+	}
+	common := []entry{}
+	perRepo := map[string][]entry{} // owner abspath → entries
+	for _, loc := range locs {
+		p, _ := loadProfileAt(loc.JSONPath)
+		desc := ""
+		needsDir := false
+		if p != nil {
+			if strings.TrimSpace(p.Description) != "" {
+				desc = " — " + strings.TrimSpace(p.Description)
+			}
+			needsDir = p.Worktree
+		}
+		e := entry{id: loc.QualifiedID, desc: desc, needsDir: needsDir}
+		if loc.OwnerRepo == "" {
+			common = append(common, e)
+		} else {
+			perRepo[loc.OwnerRepo] = append(perRepo[loc.OwnerRepo], e)
+		}
+	}
+
+	if len(common) > 0 {
+		sb.WriteString("\nCommon (usable on any --dir):\n")
+		for _, e := range common {
+			suffix := ""
+			if e.needsDir {
+				suffix = " (requires --dir)"
+			}
+			sb.WriteString(fmt.Sprintf("- %s%s%s\n", e.id, suffix, e.desc))
+		}
+	}
+
+	owners := make([]string, 0, len(perRepo))
+	for k := range perRepo {
+		owners = append(owners, k)
+	}
+	sort.Strings(owners)
+	for _, owner := range owners {
+		sb.WriteString(fmt.Sprintf("\nFrom %s (use --dir %s):\n", filepath.Base(owner), owner))
+		for _, e := range perRepo[owner] {
+			suffix := ""
+			if e.needsDir {
+				suffix = " (requires --dir)"
+			}
+			sb.WriteString(fmt.Sprintf("- %s%s%s\n", e.id, suffix, e.desc))
+		}
+	}
 }
 
 // worktreeCacheDirs is the list of well-known dependency-cache directories that
