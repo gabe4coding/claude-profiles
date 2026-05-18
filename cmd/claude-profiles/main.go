@@ -125,7 +125,7 @@ func cmdInteractive() {
 	//   - launched profiles open in SEPARATE tmux windows (see actLaunch),
 	//     so the hub tab survives across profile launches
 	//   - /delegate has somewhere to drop windows
-	bootstrapTmuxIfNeeded("claude-profiles", nil)
+	bootstrapTmuxIfNeeded(tmuxSessionName(nil), nil)
 
 	hubMode = true
 	defer func() { hubMode = false }()

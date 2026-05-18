@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -773,11 +775,13 @@ func supportsTmuxControlMode() bool {
 }
 
 // tmuxSessionName picks a deterministic session name from the first positional
-// arg (the profile id). Slashes (repo profiles like "alias/name") become
-// dashes — tmux session names disallow "/" and "." in some versions, and ":"
-// is reserved as a separator. Defaults to "claude-profiles" when no profile
-// was passed (e.g. `claude-profiles run` with no args, picker mode).
+// arg (the profile id) plus a short hash of the current working directory.
+// Slashes (repo profiles like "alias/name") become dashes — tmux session names
+// disallow "/" and "." in some versions, and ":" is reserved as a separator.
+// Without the cwd suffix, launching from a different repo would attach to the
+// session created from the first one, dragging the user back to that cwd.
 func tmuxSessionName(args []string) string {
+	suffix := cwdSessionSuffix()
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
 			continue
@@ -787,10 +791,25 @@ func tmuxSessionName(args []string) string {
 			safe = strings.ReplaceAll(safe, ch, "-")
 		}
 		if safe != "" {
-			return "cp-" + safe
+			return "cp-" + safe + "-" + suffix
 		}
 	}
-	return "claude-profiles"
+	return "claude-profiles-" + suffix
+}
+
+// cwdSessionSuffix returns a short, stable hash of the current working
+// directory so each cwd gets its own tmux session. Symlinks are resolved so
+// symlinked checkouts collapse to the same session.
+func cwdSessionSuffix() string {
+	cwd, err := os.Getwd()
+	if err != nil || cwd == "" {
+		return "nocwd"
+	}
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil && resolved != "" {
+		cwd = resolved
+	}
+	sum := sha256.Sum256([]byte(cwd))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // shellQuote single-quotes s for safe interpolation into a tmux shell-command
