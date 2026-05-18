@@ -52,8 +52,7 @@ func ensureDistillProcedureFile() error {
 //
 // Other silent early-exits:
 //   - stop_hook_active=true: Claude has already done the work; let it stop.
-//   - session_id not yet recorded in sessions.json: race window at first
-//     turn, fail safe (no double-prompts later).
+//   - no wrapper context available (running outside `claude-profiles run`).
 //   - working tree shows only .claude/* changes: read-only / hook-tweak
 //     session, nothing useful to distill.
 func cmdHookStop() {
@@ -72,7 +71,7 @@ func cmdHookStop() {
 		return
 	}
 
-	profileID := loadSessionProfiles()[input.SessionID]
+	profileID := profileIDForRunningHook(input.SessionID)
 	if profileID == "" {
 		return
 	}
@@ -104,6 +103,28 @@ func cmdHookStop() {
 	}
 	enc, _ := json.Marshal(out)
 	fmt.Println(string(enc))
+}
+
+// profileIDForRunningHook resolves the active profile id for a hook firing
+// inside `claude-profiles run`. The wrapper exports CLAUDE_PROFILES_WRAPPER_PID
+// so its pidfile is the authoritative live source — more reliable than the
+// session→profile ledger, which depends on pollForSessionID having seen the
+// jsonl in time. Falls back to the ledger for hand-tested or detached cases.
+// Backfills the ledger when a mapping is recovered from the pidfile so the hub
+// and analytics keep working after the wrapper exits.
+func profileIDForRunningHook(sessionID string) string {
+	if pid := os.Getenv("CLAUDE_PROFILES_WRAPPER_PID"); pid != "" {
+		if data, err := os.ReadFile(filepath.Join(runDirPath(), pid+".json")); err == nil {
+			var w RunningWrapper
+			if json.Unmarshal(data, &w) == nil && w.Profile != "" {
+				if sessionID != "" {
+					recordSessionProfile(sessionID, w.Profile)
+				}
+				return w.Profile
+			}
+		}
+	}
+	return loadSessionProfiles()[sessionID]
 }
 
 // workingTreeHasNonClaudeChanges reports whether `git status --porcelain` shows
