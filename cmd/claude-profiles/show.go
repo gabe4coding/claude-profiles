@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +34,22 @@ func cmdShow(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	writeProfileDetail(os.Stdout, loc, p)
+}
 
+// renderProfileDetail returns the same plain-text rendering that `cmdShow`
+// prints — used by the hub's inline detail mode.
+func renderProfileDetail(loc *ProfileLocation) string {
+	p, err := loadProfileAt(loc.JSONPath)
+	if err != nil {
+		return fmt.Sprintf("(failed to load profile: %v)", err)
+	}
+	var b strings.Builder
+	writeProfileDetail(&b, loc, p)
+	return b.String()
+}
+
+func writeProfileDetail(w io.Writer, loc *ProfileLocation, p *Profile) {
 	dir := filepath.Dir(loc.JSONPath)
 
 	source := "local"
@@ -44,18 +60,19 @@ func cmdShow(args []string) {
 		source = "repo:" + loc.RepoAlias
 	}
 
-	fmt.Printf("Profile %s\n", loc.QualifiedID)
-	fmt.Printf("  source:   %s\n", source)
-	fmt.Printf("  path:     %s\n", dir)
+	fmt.Fprintf(w, "Profile %s\n", loc.QualifiedID)
 	if d := strings.TrimSpace(p.Description); d != "" {
-		fmt.Printf("  about:    %s\n", d)
+		fmt.Fprintf(w, "\n%s\n", d)
 	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  source:   %s\n", source)
+	fmt.Fprintf(w, "  path:     %s\n", dir)
 	if t, ok := loadRecents()[loc.QualifiedID]; ok {
-		fmt.Printf("  last run: %s\n", time.Unix(t, 0).Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "  last run: %s\n", time.Unix(t, 0).Format("2006-01-02 15:04"))
 	}
 
 	if len(p.McpServers) > 0 {
-		fmt.Println("\nMCP servers")
+		fmt.Fprintln(w, "\nMCP servers")
 		names := sortedKeysOf(p.McpServers)
 		for _, n := range names {
 			cfg := p.McpServers[n]
@@ -66,21 +83,21 @@ func cmdShow(args []string) {
 			switch t {
 			case "stdio":
 				cmd := strings.TrimSpace(cfg.Command + " " + strings.Join(cfg.Args, " "))
-				fmt.Printf("  %s · stdio · %s\n", n, cmd)
+				fmt.Fprintf(w, "  %s · stdio · %s\n", n, cmd)
 			default:
 				tok := "no token cached"
 				if loadToken(cfg.URL) != "" {
 					tok = "token cached"
 				}
-				fmt.Printf("  %s · http · %s · %s\n", n, cfg.URL, tok)
+				fmt.Fprintf(w, "  %s · http · %s · %s\n", n, cfg.URL, tok)
 			}
 		}
 	}
 
 	if len(p.DeniedTools) > 0 {
-		fmt.Printf("\nDenied tools (%d)\n", len(p.DeniedTools))
+		fmt.Fprintf(w, "\nDenied tools (%d)\n", len(p.DeniedTools))
 		for _, t := range p.DeniedTools {
-			fmt.Printf("  %s\n", t)
+			fmt.Fprintf(w, "  %s\n", t)
 		}
 	}
 
@@ -115,7 +132,7 @@ func cmdShow(args []string) {
 			rows = append(rows, [2]string{"hooks", hk})
 		}
 		if len(rows) > 0 {
-			fmt.Println("\nSettings")
+			fmt.Fprintln(w, "\nSettings")
 			width := 0
 			for _, r := range rows {
 				if len(r[0]) > width {
@@ -123,7 +140,7 @@ func cmdShow(args []string) {
 				}
 			}
 			for _, r := range rows {
-				fmt.Printf("  %-*s  %s\n", width+1, r[0]+":", r[1])
+				fmt.Fprintf(w, "  %-*s  %s\n", width+1, r[0]+":", r[1])
 			}
 		}
 	}
@@ -139,32 +156,32 @@ func cmdShow(args []string) {
 		flags = append(flags, "cwd:"+p.Cwd)
 	}
 	if len(flags) > 0 {
-		fmt.Println("\nFlags")
+		fmt.Fprintln(w, "\nFlags")
 		for _, f := range flags {
-			fmt.Printf("  %s\n", f)
+			fmt.Fprintf(w, "  %s\n", f)
 		}
 	}
 
 	if len(p.Prompts) > 0 {
-		fmt.Printf("\nQuick-start prompts (%d)\n", len(p.Prompts))
+		fmt.Fprintf(w, "\nQuick-start prompts (%d)\n", len(p.Prompts))
 		for _, q := range p.Prompts {
 			preview := strings.ReplaceAll(q.Text, "\n", " ")
 			if len(preview) > 80 {
 				preview = preview[:77] + "..."
 			}
-			fmt.Printf("  %s · %s\n", q.Name, preview)
+			fmt.Fprintf(w, "  %s · %s\n", q.Name, preview)
 		}
 	}
 
 	if kinds := profilePluginKinds(*loc); len(kinds) > 0 {
-		fmt.Println("\nPlugin content")
+		fmt.Fprintln(w, "\nPlugin content")
 		for _, k := range kinds {
 			files, _ := os.ReadDir(filepath.Join(dir, k))
 			noun := "entries"
 			if len(files) == 1 {
 				noun = "entry"
 			}
-			fmt.Printf("  %s/  %d %s\n", k, len(files), noun)
+			fmt.Fprintf(w, "  %s/  %d %s\n", k, len(files), noun)
 		}
 	}
 }
