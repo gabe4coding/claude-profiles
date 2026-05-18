@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/huh"
 )
 
 // version is injected by -ldflags "-X main.version=v1.2.3" at release build
@@ -230,9 +232,7 @@ func runHubAction(r hubResult) {
 	case actImport:
 		cmdImport(nil)
 	case actRepo:
-		cmdRepoList()
-		fmt.Fprintln(os.Stderr, "\nPress Enter to return to the menu...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		cmdRepoHub()
 	case actAnalytics:
 		cmdAnalytics(nil)
 		fmt.Fprintln(os.Stderr, "Press Enter to return to the menu...")
@@ -835,6 +835,35 @@ func cmdRepo(args []string) {
 	}
 }
 
+func addRepo(url, alias, branch string) error {
+	if alias == "" {
+		alias = defaultAlias(url)
+	}
+	cfg, err := loadReposConfig()
+	if err != nil {
+		return err
+	}
+	if findRepo(cfg, alias) != nil {
+		return fmt.Errorf("alias already registered: %s", alias)
+	}
+	if findRepo(cfg, url) != nil {
+		return fmt.Errorf("URL already registered: %s", url)
+	}
+	r := RepoConfig{URL: url, Alias: alias, Branch: branch}
+	fmt.Fprintf(os.Stderr, "Cloning %s → %s\n", url, repoCachePath(url))
+	if err := cloneRepo(r); err != nil {
+		return fmt.Errorf("clone failed: %w", err)
+	}
+	r.LastSync = time.Now().Unix()
+	r.LastSyncOK = true
+	cfg.Repos = append(cfg.Repos, r)
+	if err := saveReposConfig(cfg); err != nil {
+		return err
+	}
+	success("Registered repo %q (alias: %s)", url, alias)
+	return nil
+}
+
 func cmdRepoAdd(args []string) {
 	if len(args) == 0 {
 		fatal(fmt.Errorf("usage: claude-profiles repo add <git-url> [--branch X] [--alias Y]"))
@@ -856,33 +885,71 @@ func cmdRepoAdd(args []string) {
 			}
 		}
 	}
-	if alias == "" {
-		alias = defaultAlias(url)
+	if err := addRepo(url, alias, branch); err != nil {
+		fatal(err)
 	}
+}
 
-	cfg, err := loadReposConfig()
+func cmdRepoAddInteractive() {
+	var url, alias, branch string
+	err := runForm(
+		huh.NewInput().
+			Title("Git URL").
+			Placeholder("https://github.com/owner/repo").
+			Value(&url).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("URL is required")
+				}
+				return nil
+			}),
+		huh.NewInput().
+			Title("Alias (optional)").
+			Description("Short name for this repo. Leave empty to use the default derived from the URL.").
+			Value(&alias),
+		huh.NewInput().
+			Title("Branch (optional)").
+			Description("Leave empty to use the default branch.").
+			Value(&branch),
+	)
+	if errors.Is(err, huh.ErrUserAborted) {
+		return
+	}
 	if err != nil {
 		fatal(err)
 	}
-	if findRepo(cfg, alias) != nil {
-		fatal(fmt.Errorf("alias already registered: %s", alias))
+	url = strings.TrimSpace(url)
+	alias = strings.TrimSpace(alias)
+	branch = strings.TrimSpace(branch)
+	if err := addRepo(url, alias, branch); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	}
-	if findRepo(cfg, url) != nil {
-		fatal(fmt.Errorf("URL already registered: %s", url))
-	}
+	fmt.Fprintln(os.Stderr, "\nPress Enter to continue...")
+	bufio.NewReader(os.Stdin).ReadBytes('\n')
+}
 
-	r := RepoConfig{URL: url, Alias: alias, Branch: branch}
-	fmt.Fprintf(os.Stderr, "Cloning %s → %s\n", url, repoCachePath(url))
-	if err := cloneRepo(r); err != nil {
-		fatal(fmt.Errorf("clone failed: %w", err))
+func cmdRepoHub() {
+	for {
+		var action string
+		err := runFieldBack(huh.NewSelect[string]().
+			Title("Manage repos").
+			Options(
+				huh.NewOption("Add repo", "add"),
+				huh.NewOption("List repos", "list"),
+			).
+			Value(&action))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return
+		}
+		switch action {
+		case "add":
+			cmdRepoAddInteractive()
+		case "list":
+			cmdRepoList()
+			fmt.Fprintln(os.Stderr, "\nPress Enter to continue...")
+			bufio.NewReader(os.Stdin).ReadBytes('\n')
+		}
 	}
-	r.LastSync = time.Now().Unix()
-	r.LastSyncOK = true
-	cfg.Repos = append(cfg.Repos, r)
-	if err := saveReposConfig(cfg); err != nil {
-		fatal(err)
-	}
-	success("Registered repo %q (alias: %s)", url, alias)
 }
 
 func cmdRepoList() {
