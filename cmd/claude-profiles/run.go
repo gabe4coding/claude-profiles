@@ -639,12 +639,32 @@ func shortSession(id string) string {
 	return id
 }
 
-// tmuxAvailable reports whether tmux is on PATH and the user hasn't opted out.
+// findTmuxBin returns the path to the tmux binary.
+// Falls back to well-known installation directories when tmux is not on PATH
+// (e.g. Homebrew on macOS when the process inherits a stripped PATH).
+func findTmuxBin() (string, error) {
+	if bin, err := exec.LookPath("tmux"); err == nil {
+		return bin, nil
+	}
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/tmux",
+		"/usr/local/bin/tmux",
+		"/usr/bin/tmux",
+		"/bin/tmux",
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("tmux not found")
+}
+
+// tmuxAvailable reports whether tmux is findable and the user hasn't opted out.
 func tmuxAvailable() bool {
 	if os.Getenv("CLAUDE_PROFILES_NO_TMUX") != "" {
 		return false
 	}
-	_, err := exec.LookPath("tmux")
+	_, err := findTmuxBin()
 	return err == nil
 }
 
@@ -672,7 +692,7 @@ func offerTmuxInstall() bool {
 		warn("Install failed: %v", err)
 		return false
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
+	if _, err := findTmuxBin(); err != nil {
 		warn("tmux still not found after install.")
 		return false
 	}
@@ -682,13 +702,26 @@ func offerTmuxInstall() bool {
 
 // suggestTmuxInstallCmd returns a best-guess install command for the current
 // platform, or "" when no package manager is detected.
+// findBin looks for a binary on PATH and then in known fallback directories.
+func findBin(name string, fallbacks []string) bool {
+	if _, err := exec.LookPath(name); err == nil {
+		return true
+	}
+	for _, f := range fallbacks {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func suggestTmuxInstallCmd() string {
 	switch runtime.GOOS {
 	case "darwin":
-		if _, err := exec.LookPath("brew"); err == nil {
+		if findBin("brew", []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"}) {
 			return "brew install tmux"
 		}
-		if _, err := exec.LookPath("port"); err == nil {
+		if findBin("port", []string{"/opt/local/bin/port"}) {
 			return "sudo port install tmux"
 		}
 	case "linux":
@@ -731,7 +764,7 @@ func bootstrapTmuxIfNeeded(sessionName string, innerArgs []string) {
 	if !isTTY() {
 		return
 	}
-	tmuxBin, err := exec.LookPath("tmux")
+	tmuxBin, err := findTmuxBin()
 	if err != nil {
 		if offerTmuxInstall() {
 			bootstrapTmuxIfNeeded(sessionName, innerArgs)
