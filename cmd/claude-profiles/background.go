@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,7 @@ type BackgroundedSession struct {
 	StartedAt time.Time
 	PID       int
 	Profile   string // qualified id, empty if not launched via claude-profiles
+	Hint      string // first real user message, for display in the session picker
 }
 
 func rosterPath() string {
@@ -75,6 +77,7 @@ func loadBackgroundedSessions() []BackgroundedSession {
 			StartedAt: time.UnixMilli(e.StartedAt),
 			PID:       e.PID,
 			Profile:   profile,
+			Hint:      hintFromSessionJSONL(e.SessionID, e.Cwd),
 		})
 	}
 	// Newest first.
@@ -115,6 +118,65 @@ func profileFromSessionJSONL(sessionID, cwd string, locs []ProfileLocation) stri
 				return ev.CustomTitle
 			}
 		}
+	}
+	return ""
+}
+
+// hintFromSessionJSONL reads the session's .jsonl file looking for the first
+// real user-typed message to use as a session hint in the picker. It skips
+// slash-command entries and tool-result turns, returning the text truncated to
+// 60 runes, or "" if nothing suitable is found.
+func hintFromSessionJSONL(sessionID, cwd string) string {
+	path := filepath.Join(encodedSessionsDir(cwd), sessionID+".jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<16), 1<<24)
+	for i := 0; i < 200 && scanner.Scan(); i++ {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, []byte(`"user"`)) {
+			continue
+		}
+		var ev struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Type != "user" {
+			continue
+		}
+		// content is either a plain string or an array of blocks (tool results)
+		var text string
+		if len(ev.Message.Content) > 0 && ev.Message.Content[0] == '"' {
+			if err := json.Unmarshal(ev.Message.Content, &text); err != nil {
+				continue
+			}
+		} else {
+			continue // array content = tool results, skip
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		// skip slash commands and injected system blocks
+		if strings.HasPrefix(text, "<command-name>") ||
+			strings.HasPrefix(text, "<local-command-caveat>") ||
+			strings.HasPrefix(text, "<system-reminder>") {
+			continue
+		}
+		runes := []rune(text)
+		if len(runes) > 60 {
+			return string(runes[:60]) + "…"
+		}
+		return text
 	}
 	return ""
 }

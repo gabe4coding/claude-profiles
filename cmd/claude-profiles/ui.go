@@ -339,10 +339,13 @@ func pickBackgroundedSession(profile string, bgs []BackgroundedSession) *Backgro
 	}
 	opts := make([]huh.Option[string], len(bgs))
 	for i, bs := range bgs {
-		label := fmt.Sprintf("%s · started %s · %s",
+		label := fmt.Sprintf("%s · %s · %s",
 			shortSession(bs.SessionID),
 			bs.StartedAt.Format("Jan 2 15:04"),
 			shortenCwd(bs.Cwd))
+		if bs.Hint != "" {
+			label += fmt.Sprintf(" — %q", bs.Hint)
+		}
 		opts[i] = huh.NewOption(label, bs.SessionID)
 	}
 

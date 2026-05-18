@@ -181,8 +181,12 @@ func runHubAction(r hubResult) {
 			var chosen *BackgroundedSession
 			if len(bgs) == 1 {
 				bs := bgs[0]
-				info("· %s has a backgrounded session %s (cwd %s, started %s)",
-					r.profile, shortSession(bs.SessionID), bs.Cwd, bs.StartedAt.Format("15:04:05"))
+				hint := ""
+				if bs.Hint != "" {
+					hint = fmt.Sprintf(" — %q", bs.Hint)
+				}
+				info("· %s has a backgrounded session %s (cwd %s, started %s%s)",
+					r.profile, shortSession(bs.SessionID), bs.Cwd, bs.StartedAt.Format("15:04:05"), hint)
 				if confirm("Resume that conversation via the wrapper (full profile reapplied)?") {
 					chosen = &bs
 				}
