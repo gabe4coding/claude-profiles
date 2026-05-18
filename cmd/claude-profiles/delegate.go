@@ -321,6 +321,11 @@ func cmdDelegateRunner(args []string) {
 		writeDelegateResult(dir, fmt.Sprintf("(delegate %s failed: profile %q does not resolve: %v)", delegateID, req.Profile, err))
 		fatal(err)
 	}
+	if loadProfilePrefs(filepath.Dir(loc.JSONPath)).Disabled {
+		msg := fmt.Sprintf("(delegate %s failed: profile %q is disabled)", delegateID, req.Profile)
+		writeDelegateResult(dir, msg)
+		fatal(fmt.Errorf("profile %q is disabled", req.Profile))
+	}
 	p, err := loadProfileAt(loc.JSONPath)
 	if err != nil {
 		writeDelegateResult(dir, fmt.Sprintf("(delegate %s failed to load profile: %v)", delegateID, err))

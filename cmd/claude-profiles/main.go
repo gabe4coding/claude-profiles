@@ -663,7 +663,7 @@ func runEditMenu(loc ProfileLocation) {
 			return saveProfilePrefs(dir, ProfilePrefs{
 				Description: p.Description,
 				Isolated:    p.Isolated,
-				Hidden:      existingPrefs.Hidden,
+				Disabled:    existingPrefs.Disabled,
 				Worktree:    p.Worktree,
 				Prompts:     p.Prompts,
 				Cwd:         p.Cwd,
