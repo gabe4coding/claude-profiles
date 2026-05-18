@@ -1,4 +1,4 @@
-module github.com/gabe4coding/claude-profiles-test
+module github.com/gabe4coding/claude-profiles
 
 go 1.25.0
 

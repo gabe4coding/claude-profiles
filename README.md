@@ -19,7 +19,7 @@ git config --global url."git@github.com:".insteadOf "https://github.com/"
 Then install the binary:
 
 ```bash
-go install github.com/gabe4coding/claude-profiles-test/cmd/claude-profiles@latest
+go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
 ```
 
 The binary lands in `$(go env GOBIN)` (falls back to `$GOPATH/bin`, usually `~/go/bin`). Make sure that's on your `PATH`.
@@ -176,7 +176,7 @@ Drop a profile directory at `<repo-root>/.claude-profiles/<name>/` and it auto-a
 ## Updating
 
 ```bash
-go install github.com/gabe4coding/claude-profiles-test/cmd/claude-profiles@latest
+go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
 claude-profiles version
 ```
 
