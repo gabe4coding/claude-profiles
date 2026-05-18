@@ -1,9 +1,0 @@
-{
-  "model": "sonnet",
-  "env": {
-    "DEV_MODE": "true"
-  },
-  "permissions": {
-    "defaultMode": "auto"
-  }
-}
