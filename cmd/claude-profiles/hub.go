@@ -128,7 +128,7 @@ type hubModel struct {
 
 	paletteOpen bool
 	detailMode  bool
-	showHidden  bool
+	showDisabled bool
 
 	// Raw data for rebuilding list items after hide/unhide.
 	locs       []ProfileLocation
@@ -183,11 +183,11 @@ func (m *hubModel) applyFilter() {
 	m.list.Select(0)
 }
 
-// buildFlatProfiles returns every non-hidden profile as a profileItem,
+// buildFlatProfiles returns every non-disabled profile as a profileItem,
 // excluding section headers — used as the corpus for filtering.
 func (m *hubModel) buildFlatProfiles() []profileItem {
-	isHidden := func(loc ProfileLocation) bool {
-		return m.prefsStore[filepath.Dir(loc.JSONPath)].Hidden
+	isDisabled := func(loc ProfileLocation) bool {
+		return m.prefsStore[filepath.Dir(loc.JSONPath)].Disabled
 	}
 	pinnedSet := map[string]bool{}
 	pinPromptName := map[string]string{}
@@ -213,7 +213,7 @@ func (m *hubModel) buildFlatProfiles() []profileItem {
 
 	var visible []ProfileLocation
 	for _, loc := range m.locs {
-		if isHidden(loc) && !m.showHidden {
+		if isDisabled(loc) && !m.showDisabled {
 			continue
 		}
 		visible = append(visible, loc)
@@ -240,18 +240,18 @@ func (m *hubModel) buildFlatProfiles() []profileItem {
 }
 
 // buildSectionedItems constructs the sectioned view (Pinned, Project, User,
-// repo:*, Hidden). Profiles marked hidden in prefsStore are excluded from
-// their normal sections and collected into a "Hidden" section at the bottom.
+// repo:*, Disabled). Profiles marked disabled in prefsStore are excluded from
+// their normal sections and collected into a "Disabled" section at the bottom.
 func (m *hubModel) buildSectionedItems() []list.Item {
-	isHidden := func(loc ProfileLocation) bool {
-		return m.prefsStore[filepath.Dir(loc.JSONPath)].Hidden
+	isDisabled := func(loc ProfileLocation) bool {
+		return m.prefsStore[filepath.Dir(loc.JSONPath)].Disabled
 	}
 
-	// Modal tags are computed over the visible (non-hidden) corpus so the
+	// Modal tags are computed over the visible (non-disabled) corpus so the
 	// "common case" reflects what's actually on screen.
 	var visible []ProfileLocation
 	for _, loc := range m.locs {
-		if !isHidden(loc) {
+		if !isDisabled(loc) {
 			visible = append(visible, loc)
 		}
 	}
@@ -267,11 +267,11 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 		}
 	}
 
-	var projectLocs, userLocs, hiddenLocs []ProfileLocation
+	var projectLocs, userLocs, disabledLocs []ProfileLocation
 	repoLocs := map[string][]ProfileLocation{}
 	for _, loc := range m.locs {
-		if isHidden(loc) {
-			hiddenLocs = append(hiddenLocs, loc)
+		if isDisabled(loc) {
+			disabledLocs = append(disabledLocs, loc)
 			continue
 		}
 		switch {
@@ -305,7 +305,7 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 		var pinnedItems []list.Item
 		for _, pe := range m.pins {
 			for _, loc := range m.locs {
-				if loc.QualifiedID != pe.ProfileID || isHidden(loc) {
+				if loc.QualifiedID != pe.ProfileID || isDisabled(loc) {
 					continue
 				}
 				promptText := ""
@@ -347,15 +347,15 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 		addLocs(alias, repoLocs[alias], alias)
 	}
 
-	if len(hiddenLocs) > 0 {
-		if m.showHidden {
-			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Hidden (%d)  ·  Tab → palette → H to collapse", len(hiddenLocs))})
-			for _, loc := range hiddenLocs {
+	if len(disabledLocs) > 0 {
+		if m.showDisabled {
+			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Disabled (%d)  ·  Tab → palette → H to collapse", len(disabledLocs))})
+			for _, loc := range disabledLocs {
 				pinned := pinnedSet[loc.QualifiedID]
 				items = append(items, makeItem(loc, pinned, "", "", ""))
 			}
 		} else {
-			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Hidden (%d)  ·  Tab → palette → H to reveal", len(hiddenLocs))})
+			items = append(items, sectionHeaderItem{label: fmt.Sprintf("Disabled (%d)  ·  Tab → palette → H to reveal", len(disabledLocs))})
 		}
 	}
 
@@ -481,7 +481,7 @@ func (m hubModel) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case "h":
-		// Hide / unhide the selected profile in place.
+		// Enable / disable the selected profile.
 		if selectedID := m.selectedID(); selectedID != "" {
 			for _, loc := range m.locs {
 				if loc.QualifiedID != selectedID {
@@ -489,7 +489,7 @@ func (m hubModel) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				dir := filepath.Dir(loc.JSONPath)
 				prefs := m.prefsStore[dir]
-				prefs.Hidden = !prefs.Hidden
+				prefs.Disabled = !prefs.Disabled
 				if saveProfilePrefs(dir, prefs) == nil {
 					m.prefsStore[dir] = prefs
 					m.rebuildIndex()
@@ -501,7 +501,7 @@ func (m hubModel) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.paletteOpen = false
 		return m, nil
 	case "H":
-		m.showHidden = !m.showHidden
+		m.showDisabled = !m.showDisabled
 		m.rebuildIndex()
 		m.applyFilter()
 		m.paletteOpen = false
@@ -767,8 +767,8 @@ func (m hubModel) paletteContent() string {
 		{"x", "export selected"},
 		{"i", "import"},
 		{"p", "pin / unpin"},
-		{"h", "hide / unhide"},
-		{"H", "toggle Hidden section"},
+		{"h", "enable / disable"},
+		{"H", "toggle Disabled section"},
 		{"r", "manage repos"},
 		{"s", "analytics"},
 	}

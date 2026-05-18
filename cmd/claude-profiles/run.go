@@ -173,6 +173,9 @@ func cmdRun(args []string) {
 		if err != nil {
 			fatal(err)
 		}
+		if loadProfilePrefs(filepath.Dir(loc.JSONPath)).Disabled {
+			fatal(fmt.Errorf("profile %q is disabled — enable it in the hub (Tab → palette → h)", profile))
+		}
 		p, err := loadProfileAt(loc.JSONPath)
 		if err != nil {
 			fatal(err)
@@ -959,6 +962,16 @@ func cmdHookSessionStart() {
 				locs = append(locs, loc)
 			}
 		}
+
+		// Strip disabled profiles — they should not be offered to the agent.
+		prefsStore := loadPrefsStore()
+		filtered := locs[:0]
+		for _, loc := range locs {
+			if !prefsStore[canonicalProfileDir(filepath.Dir(loc.JSONPath))].Disabled {
+				filtered = append(filtered, loc)
+			}
+		}
+		locs = filtered
 
 		// Workspace mode: when CWD is NOT inside any repo with .claude-profiles/,
 		// group profiles by owning repo so the orchestrator knows which are
