@@ -73,22 +73,44 @@ func savePrefsStore(store ProfilePrefsStore) error {
 }
 
 func loadProfilePrefs(dir string) ProfilePrefs {
-	return loadPrefsStore()[dir]
+	return loadPrefsStore()[canonicalProfileDir(dir)]
 }
 
 func saveProfilePrefs(dir string, prefs ProfilePrefs) error {
 	store := loadPrefsStore()
-	store[dir] = prefs
+	store[canonicalProfileDir(dir)] = prefs
 	return savePrefsStore(store)
 }
 
 func deleteProfilePrefs(dir string) error {
+	dir = canonicalProfileDir(dir)
 	store := loadPrefsStore()
 	if _, ok := store[dir]; !ok {
 		return nil
 	}
 	delete(store, dir)
 	return savePrefsStore(store)
+}
+
+// canonicalProfileDir normalises a profile directory path so that a profile
+// discovered from inside a git worktree resolves to the same prefs key as the
+// equivalent profile in the main working tree. Worktrees live at
+// <repo>/.claude/worktrees/<name>/ and their absolute paths differ from the
+// main tree's, causing prefs stored under the main-tree path to be invisible
+// from the worktree.
+func canonicalProfileDir(dir string) string {
+	const marker = "/.claude/worktrees/"
+	idx := strings.Index(dir, marker)
+	if idx < 0 {
+		return dir
+	}
+	repoRoot := dir[:idx]
+	after := dir[idx+len(marker):]
+	slash := strings.Index(after, "/")
+	if slash < 0 {
+		return dir // no path after the worktree name, nothing to remap
+	}
+	return repoRoot + after[slash:] // repoRoot + /<relative-tail>
 }
 
 type Profile struct {
