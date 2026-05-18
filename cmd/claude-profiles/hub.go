@@ -1021,6 +1021,9 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		if p.Worktree {
 			tags = append(tags, "worktree")
 		}
+		if strings.EqualFold(p.Distill, "on") {
+			tags = append(tags, "distill")
+		}
 		if p.Cwd != "" {
 			tags = append(tags, "cwd")
 		}

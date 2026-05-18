@@ -272,6 +272,9 @@ func cmdList() {
 			if p.Worktree {
 				tags = append(tags, "worktree")
 			}
+			if strings.EqualFold(p.Distill, "on") {
+				tags = append(tags, "distill")
+			}
 			if p.Cwd != "" {
 				tags = append(tags, "cwd")
 			}
@@ -599,6 +602,16 @@ func runEditMenu(loc ProfileLocation) {
 				state = "on"
 			}
 			info("Worktree mode is now %s.", state)
+		case "distill":
+			if strings.EqualFold(p.Distill, "on") {
+				p.Distill = "off"
+			} else {
+				p.Distill = "on"
+			}
+			if err := saveFn(p); err != nil {
+				fatal(err)
+			}
+			info("Session distillation is now %s.", p.Distill)
 		case "prompts":
 			managePrompts(p, loc, saveFn)
 		case "plugin":

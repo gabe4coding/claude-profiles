@@ -717,6 +717,12 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 	}
 	worktreeLabel := fmt.Sprintf("Worktree mode: %s (start each session in a fresh git worktree)", worktreeState)
 
+	distillState := "off"
+	if strings.EqualFold(p.Distill, "on") {
+		distillState = "on"
+	}
+	distillLabel := fmt.Sprintf("Session distillation: %s (record findings to CLAUDE.md / rules at session end)", distillState)
+
 	kinds := profilePluginKinds(loc)
 	pluginSummary := "none"
 	if len(kinds) > 0 {
@@ -733,6 +739,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 		opts = []huh.Option[string]{
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(worktreeLabel, "worktree"),
+			huh.NewOption(distillLabel, "distill"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption("Open user settings in $EDITOR", "editor"),
@@ -744,6 +751,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(worktreeLabel, "worktree"),
+			huh.NewOption(distillLabel, "distill"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile folder in $EDITOR", "editor"),

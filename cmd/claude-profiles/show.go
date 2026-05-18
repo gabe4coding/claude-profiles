@@ -152,6 +152,9 @@ func writeProfileDetail(w io.Writer, loc *ProfileLocation, p *Profile) {
 	if p.Worktree {
 		flags = append(flags, "worktree")
 	}
+	if strings.EqualFold(p.Distill, "on") {
+		flags = append(flags, "distill")
+	}
 	if p.Cwd != "" {
 		flags = append(flags, "cwd:"+p.Cwd)
 	}
