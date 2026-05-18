@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,27 @@ func installUpdate(latest string) error {
 	if err := os.Rename(tmpPath, exePath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("cannot replace binary at %s: %v", exePath, err)
+	}
+	// On macOS the linker-signed signature does not survive copy+rename — the
+	// kernel SIGKILLs the new binary at launch. Re-apply an ad-hoc signature.
+	if runtime.GOOS == "darwin" {
+		if err := adhocSign(exePath); err != nil {
+			return fmt.Errorf("re-sign failed: %v", err)
+		}
+	}
+	return nil
+}
+
+// adhocSign re-signs a Mach-O binary with an ad-hoc signature using the system
+// `codesign` tool. Required after writing a Mach-O binary via os.Rename on macOS.
+func adhocSign(path string) error {
+	cs, err := exec.LookPath("codesign")
+	if err != nil {
+		return fmt.Errorf("codesign not on PATH")
+	}
+	out, err := exec.Command(cs, "--force", "--sign", "-", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
