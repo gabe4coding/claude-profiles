@@ -93,13 +93,14 @@ func cmdHookStop() {
 		return
 	}
 
-	if err := ensureDistillProcedureFile(); err != nil {
-		return
+	procedure := distillProcedureDefault
+	if custom, err := os.ReadFile(distillProcedurePath()); err == nil && len(custom) > 0 {
+		procedure = string(custom)
 	}
 
 	out := map[string]any{
 		"decision": "block",
-		"reason":   fmt.Sprintf("Run session distillation per %s.", distillProcedurePath()),
+		"reason":   procedure,
 	}
 	enc, _ := json.Marshal(out)
 	fmt.Println(string(enc))
