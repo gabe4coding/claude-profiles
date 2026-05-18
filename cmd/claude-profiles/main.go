@@ -152,6 +152,13 @@ func cmdInteractive() {
 }
 
 func runHubAction(r hubResult) {
+	// Clear the normal screen each time the hub hands off to an action so that
+	// info lines and sub-prompts from previous invocations don't accumulate
+	// when the hub re-enters alt-screen and the user triggers the same action
+	// again.
+	if isTTY() {
+		fmt.Fprint(os.Stderr, "\033[2J\033[H")
+	}
 	defer func() {
 		rec := recover()
 		if rec == nil {
@@ -160,9 +167,6 @@ func runHubAction(r hubResult) {
 		if rec != errHubBack {
 			panic(rec)
 		}
-		// Clear the normal screen so output from aborted sub-prompts (info lines,
-		// huh forms) doesn't accumulate when the hub re-enters alt-screen and
-		// the user triggers the same action again.
 		if isTTY() {
 			fmt.Fprint(os.Stderr, "\033[2J\033[H")
 		}
