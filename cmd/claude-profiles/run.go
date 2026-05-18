@@ -284,7 +284,7 @@ func cmdRun(args []string) {
 
 		// Snapshot existing session files so we can detect which one this
 		// invocation creates (used for --resume on the next iteration).
-		before := snapshotSessionFiles()
+		before := snapshotSessionFiles("")
 
 		cmd := exec.Command(binary, claudeArgs[1:]...)
 		cmd.Stdin = os.Stdin
@@ -350,7 +350,7 @@ func cmdRun(args []string) {
 			}
 			passThrough = []string{body}
 		default: // "keep" or unset (legacy plain-text marker)
-			after := snapshotSessionFiles()
+			after := snapshotSessionFiles("")
 			if id := findNewOrUpdatedSession(before, after); id != "" {
 				resumeID = id
 			}
@@ -361,14 +361,14 @@ func cmdRun(args []string) {
 }
 
 // snapshotSessionFiles records mtimes of every .jsonl session file across all
-// session dirs for the current cwd — including worktree subdirs. Keys are
-// ABSOLUTE paths so callers can distinguish files with the same basename
-// across dirs and resolve the actual file path directly without re-deriving it
-// from cwd (which may not match the dir the file lives in once --worktree is
-// involved).
-func snapshotSessionFiles() map[string]int64 {
+// session dirs for the given root — including worktree subdirs. Pass "" to use
+// the current process cwd. Keys are ABSOLUTE paths so callers can distinguish
+// files with the same basename across dirs and resolve the actual file path
+// directly without re-deriving it from cwd (which may not match the dir the
+// file lives in once --worktree is involved).
+func snapshotSessionFiles(root string) map[string]int64 {
 	out := map[string]int64{}
-	for _, dir := range sessionDirsToWatch() {
+	for _, dir := range sessionDirsToWatch(root) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -385,17 +385,21 @@ func snapshotSessionFiles() map[string]int64 {
 }
 
 // sessionDirsToWatch returns all ~/.claude/projects/ subdirs that could receive
-// session files for the current CWD. It always includes the main encoded dir,
-// plus any worktree dirs (pattern: <main-encoded>--claude-worktrees-<name>)
-// that already exist on disk. The before-snapshot won't include a worktree dir
-// that hasn't been created yet — that's fine: new files in it will naturally
-// appear as "new" in the after-snapshot.
-func sessionDirsToWatch() []string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil
+// session files for the given root directory. Pass "" to use the current
+// process cwd. It always includes the main encoded dir, plus any worktree dirs
+// (pattern: <main-encoded>--claude-worktrees-<name>) that already exist on
+// disk. The before-snapshot won't include a worktree dir that hasn't been
+// created yet — that's fine: new files in it will naturally appear as "new" in
+// the after-snapshot.
+func sessionDirsToWatch(root string) []string {
+	if root == "" {
+		var err error
+		root, err = os.Getwd()
+		if err != nil {
+			return nil
+		}
 	}
-	mainDir := encodedSessionsDir(cwd)
+	mainDir := encodedSessionsDir(root)
 	mainEncoded := filepath.Base(mainDir)
 	projectsRoot := filepath.Dir(mainDir)
 
@@ -589,7 +593,7 @@ func pollForSessionID(before map[string]int64, w *RunningWrapper, done <-chan st
 		case <-timeout:
 			return
 		case <-ticker.C:
-			id := findNewOrUpdatedSession(before, snapshotSessionFiles())
+			id := findNewOrUpdatedSession(before, snapshotSessionFiles(""))
 			if id == "" || id == w.SessionID {
 				continue
 			}

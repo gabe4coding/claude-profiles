@@ -392,7 +392,7 @@ func cmdDelegateRunner(args []string) {
 		claudeArgs = append(claudeArgs, "--", req.Task)
 	}
 
-	before := snapshotSessionFiles()
+	before := snapshotSessionFiles(req.Dir)
 	cmd := exec.Command(binary, claudeArgs[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -408,7 +408,7 @@ func cmdDelegateRunner(args []string) {
 	// jsonl-path.txt inside the delegate dir. The slash command in the parent
 	// session reads that file and hands the path to the main agent for live
 	// `tail -F` + Monitor streaming.
-	go announceDelegateJSONLPath(before, dir)
+	go announceDelegateJSONLPath(before, dir, req.Dir)
 
 	// As soon as the delegate finishes ITS FIRST TURN (claude emits a
 	// {"type":"system","subtype":"turn_duration"} event in the .jsonl), capture
@@ -420,9 +420,9 @@ func cmdDelegateRunner(args []string) {
 
 	_ = cmd.Run()
 
-	after := snapshotSessionFiles()
+	after := snapshotSessionFiles(req.Dir)
 	sessionID := findNewOrUpdatedSession(before, after)
-	result := extractLastAssistantMessage(sessionID)
+	result := extractLastAssistantMessage(sessionID, req.Dir)
 	if result == "" {
 		result = "(delegate exited without a final assistant reply)"
 	}
@@ -492,13 +492,13 @@ func writeDelegateResult(dir, body string) {
 // win the race and we'd point the watcher at the parent's events instead of
 // the delegate's. That bug shipped — symptom: watcher emits parent's
 // activity, or nothing at all when parent is idle.
-func announceDelegateJSONLPath(before map[string]int64, delegateDir string) {
+func announceDelegateJSONLPath(before map[string]int64, delegateDir, targetDir string) {
 	// snapshotSessionFiles keys by ABSOLUTE path, so we don't need to rejoin
 	// anything — the key is already the path the watcher should tail.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
-		now := snapshotSessionFiles()
+		now := snapshotSessionFiles(targetDir)
 		for absPath := range now {
 			if _, existed := before[absPath]; existed {
 				continue
@@ -612,11 +612,11 @@ func jsonlHasTurnDuration(path string) bool {
 // exited and result.md hasn't been written yet. Scans every dir that could
 // hold the session (main + worktree subdirs) so worktree-launched delegates
 // still resolve correctly.
-func extractLastAssistantMessage(sessionID string) string {
+func extractLastAssistantMessage(sessionID, root string) string {
 	if sessionID == "" {
 		return ""
 	}
-	for _, dir := range sessionDirsToWatch() {
+	for _, dir := range sessionDirsToWatch(root) {
 		path := filepath.Join(dir, sessionID+".jsonl")
 		if _, err := os.Stat(path); err == nil {
 			return extractLastAssistantFromFile(path)
