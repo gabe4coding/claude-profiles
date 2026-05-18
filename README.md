@@ -8,21 +8,20 @@ Think `nvm use` but for your Claude sessions.
 
 ## Install
 
-The repo is private, so set `GOPRIVATE` once:
+The repo is private, so do this once — tell `go` to skip the public proxy, and tell `git` to use SSH for `github.com`:
 
 ```bash
 export GOPRIVATE=github.com/gabe4coding/*
-# (Optional) make sure git uses SSH for that host
 git config --global url."git@github.com:".insteadOf "https://github.com/"
 ```
 
-Then install the binary:
+Then install:
 
 ```bash
 go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
 ```
 
-The binary lands in `$(go env GOBIN)` (falls back to `$GOPATH/bin`, usually `~/go/bin`). Make sure that's on your `PATH`.
+Make sure `~/go/bin` is on your `PATH`.
 
 Sanity check:
 
