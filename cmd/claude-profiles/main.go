@@ -1173,6 +1173,9 @@ func cmdCopy(args []string) {
 		fatal(fmt.Errorf("usage: claude-profiles copy <alias/profile> [<local-name>]"))
 	}
 	srcID := args[0]
+	if loc := resolveBuiltinLocation(srcID); loc != nil {
+		fatal(fmt.Errorf("built-in profiles (%s) can't be copied — they're constants, not on-disk profiles", loc.QualifiedID))
+	}
 	if !strings.Contains(srcID, "/") {
 		fatal(fmt.Errorf("source must be a repo profile (alias/name); local profiles are already editable"))
 	}
