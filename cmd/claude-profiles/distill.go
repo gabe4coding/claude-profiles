@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // distillProcedureDefault is the canonical procedure text shipped with this
@@ -89,13 +90,24 @@ func cmdHookStop() {
 		return
 	}
 
-	if !sessionHasNonClaudeWork(startedAt) {
+	if !sessionHasCommittedNonClaudeWork(startedAt) {
+		return
+	}
+
+	headSHA := currentHeadSHA()
+	if !commitsBetweenHaveNonClaude(lastDistillSHA(profileID), headSHA) {
 		return
 	}
 
 	if err := ensureDistillProcedureFile(); err != nil {
 		return
 	}
+
+	// Record the bookmark *before* emitting the block: if Claude crashes or
+	// skips the distillation, we still advance past these commits next time
+	// rather than re-prompting on the same work. Trading a rare missed
+	// distillation for guaranteed no double-prompts is the right tradeoff.
+	saveLastDistillBookmark(profileID, headSHA)
 
 	out := map[string]any{
 		"decision": "block",
@@ -128,53 +140,21 @@ func wrapperContextForHook(sessionID string) (profileID string, startedAt int64)
 	return loadSessionProfiles()[sessionID], 0
 }
 
-// sessionHasNonClaudeWork reports whether the session has touched any file
-// outside `.claude/` — checking both uncommitted (`git status --porcelain`)
-// and committed (`git log --since=<wrapper-start>`) changes. The committed
-// path is required because once the agent commits, status goes clean and the
-// uncommitted-only filter would silently skip distillation for substantive
-// sessions. sinceUnix=0 means the wrapper context wasn't available — the log
-// check is skipped and we fall back to the uncommitted view only.
-func sessionHasNonClaudeWork(sinceUnix int64) bool {
-	if uncommittedHasNonClaude() {
-		return true
+// sessionHasCommittedNonClaudeWork reports whether the session produced at
+// least one commit reachable from HEAD (since the wrapper started) that
+// touched a file outside `.claude/`. Uncommitted-only work is deliberately
+// excluded: WIP that may get reverted before commit isn't substantive enough
+// to justify a distillation prompt, and once the agent does commit we'll
+// catch it on the next Stop. Fail-closed on git error (returns false): no
+// signal means no prompt rather than fail-open noise.
+//
+// sinceUnix=0 means the wrapper context wasn't available; we skip the check
+// entirely (return false) — without a lower time bound we'd scan the entire
+// repo history.
+func sessionHasCommittedNonClaudeWork(sinceUnix int64) bool {
+	if sinceUnix <= 0 {
+		return false
 	}
-	if sinceUnix > 0 && committedHasNonClaudeSince(sinceUnix) {
-		return true
-	}
-	return false
-}
-
-// uncommittedHasNonClaude reports whether `git status --porcelain` shows any
-// modified/untracked path outside `.claude/`. Fail-open: when git is
-// unavailable or the cwd isn't a repo, return true so distillation isn't
-// silently lost in environments where the filter has no signal.
-func uncommittedHasNonClaude() bool {
-	out, err := exec.Command("git", "status", "--porcelain").Output()
-	if err != nil {
-		return true
-	}
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		path := line[3:]
-		// Rename: "R  old -> new" — only the destination matters.
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
-		}
-		if !strings.HasPrefix(path, ".claude/") {
-			return true
-		}
-	}
-	return false
-}
-
-// committedHasNonClaudeSince reports whether any commit reachable from HEAD
-// with a commit date at or after sinceUnix touched a file outside `.claude/`.
-// Fail-closed on git error (returns false) — the uncommitted check is the
-// primary signal and has its own fail-open behaviour.
-func committedHasNonClaudeSince(sinceUnix int64) bool {
 	out, err := exec.Command("git", "log",
 		fmt.Sprintf("--since=@%d", sinceUnix),
 		"--name-only", "--pretty=", "HEAD").Output()
@@ -190,4 +170,101 @@ func committedHasNonClaudeSince(sinceUnix int64) bool {
 		}
 	}
 	return false
+}
+
+// currentHeadSHA returns the current `HEAD` commit SHA, or "" if unavailable
+// (e.g. not in a git repo, no commits yet). "" propagates as "no bookmark
+// progress" through the dedup check.
+func currentHeadSHA() string {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitsBetweenHaveNonClaude reports whether any commit in the range
+// `lastSHA..headSHA` (exclusive..inclusive) touched a file outside `.claude/`.
+//
+// Cases:
+//   - lastSHA == "" → no prior bookmark; allow (return true) so first-time
+//     distillation isn't blocked.
+//   - lastSHA == headSHA → nothing new since last bookmark; skip.
+//   - `git log` errors (lastSHA missing from history after rebase/squash, or
+//     bookmark from a different worktree) → fail-open (return true) so the
+//     next block emission resets the bookmark to a live SHA. Fail-closed
+//     here would silently strand an orphaned bookmark and suppress every
+//     future distillation until the file is deleted by hand.
+func commitsBetweenHaveNonClaude(lastSHA, headSHA string) bool {
+	if lastSHA == "" {
+		return true
+	}
+	if lastSHA == headSHA {
+		return false
+	}
+	rng := lastSHA + ".." + headSHA
+	out, err := exec.Command("git", "log", rng, "--name-only", "--pretty=").Output()
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ".claude/") {
+			return true
+		}
+	}
+	return false
+}
+
+// distillBookmark is the on-disk state recording the last HEAD SHA we
+// emitted a distill-block prompt for, per profile. Read at hook entry to
+// short-circuit when no new work has accumulated since.
+type distillBookmark struct {
+	HeadSHA  string `json:"head_sha"`
+	StampUTC int64  `json:"stamp_utc"`
+}
+
+// lastDistillBookmarkPath returns the absolute path of the bookmark file for
+// a given profileID. The profileID may contain `/` (alias/name form), so we
+// path-encode separators to keep a flat per-profile namespace under
+// ~/.claude-profiles/last-distill/.
+func lastDistillBookmarkPath(profileID string) string {
+	safe := strings.ReplaceAll(profileID, "/", "__")
+	safe = strings.ReplaceAll(safe, string(os.PathSeparator), "__")
+	return filepath.Join(profilesRoot(), "last-distill", safe+".json")
+}
+
+// lastDistillSHA returns the HEAD SHA recorded at the last distill-block
+// emission for this profile, or "" if no bookmark exists or the file is
+// unreadable.
+func lastDistillSHA(profileID string) string {
+	data, err := os.ReadFile(lastDistillBookmarkPath(profileID))
+	if err != nil {
+		return ""
+	}
+	var b distillBookmark
+	if json.Unmarshal(data, &b) != nil {
+		return ""
+	}
+	return b.HeadSHA
+}
+
+// saveLastDistillBookmark records the current HEAD SHA as the bookmark for
+// this profile. Errors are swallowed — bookmark corruption only degrades the
+// dedup filter to "always prompt", which is the previous behaviour.
+func saveLastDistillBookmark(profileID, headSHA string) {
+	if headSHA == "" {
+		return
+	}
+	path := lastDistillBookmarkPath(profileID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(distillBookmark{HeadSHA: headSHA, StampUTC: time.Now().Unix()})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
 }
