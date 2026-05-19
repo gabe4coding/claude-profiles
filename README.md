@@ -28,7 +28,10 @@ claude-profiles acme/release-notes
 ```
 Auto-syncs every 5 min. `copy` a teammate's profile to fork it locally — the original stays read-only. Or commit a project-scoped profile at `<repo>/.claude-profiles/<name>/` and it auto-appears for anyone running `claude-profiles` in that checkout.
 
-Plus: per-launch git **worktrees** (parallel agents without stepping on each other), **isolated** mode (clean `~/.claude` for safe testing), a session **distill** hook, **analytics** on context-window burn and cache hit rate, and a TUI **hub** where pin / edit / copy / export are single keystrokes.
+**4. `/delegate` — fan out work to a sub-agent without losing the parent session.**
+From inside any session, hand a task to another profile in a new tmux window. The delegate runs under its own profile (different model, different MCP, different permissions); when it finishes, its last reply gets injected back into the parent context. Multi-agent built in — no orchestrator to wire up.
+
+Plus: per-launch git **worktrees** (parallel agents without stepping on each other), **isolated** mode (clean `~/.claude` for safe testing), `/bg` to background a session and recover it from the hub later, `/generate` to scaffold a new profile interactively (with WebFetch-based MCP server discovery), a session **distill** hook, **analytics** on context-window burn and cache hit rate, and a TUI **hub** where pin / edit / copy / export are single keystrokes.
 
 ---
 

@@ -23,8 +23,8 @@ import (
 // it relaunches claude with the new profile and --resume on the same session,
 // so the conversation continues seamlessly.
 //
-// The marker is set by a `/switch <name>` slash command, which the loop
-// installs into ~/.claude/commands/switch.md on first run. The command also
+// The marker is set by a `/handoff <name>` slash command, which the loop
+// installs into the wrapper plugin's commands dir on first run. The command also
 // kills the running claude (SIGTERM to its parent), so the user doesn't need
 // to type /exit themselves.
 
@@ -130,7 +130,7 @@ func cmdRun(args []string) {
 	passThrough := args
 
 	if err := ensureSwitchSlashCommand(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not install /switch slash command: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: could not install /handoff slash command: %v\n", err)
 	}
 	if err := ensureWrapperPluginHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install wrapper-plugin hooks: %v\n", err)
