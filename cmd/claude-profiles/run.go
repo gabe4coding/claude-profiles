@@ -546,12 +546,12 @@ func ensureHandoffSlashCommand() error {
 	commands := []struct{ name, body string }{
 		{"handoff.md", handoffSlashCommand},
 		{"generate.md", generateSlashCommand},
-	}
-	if tmuxAvailable() {
-		commands = append(commands, struct{ name, body string }{"delegate.md", delegateSlashCommand})
-	} else {
-		// Remove any stale delegate.md so /delegate disappears from /help.
-		_ = os.Remove(filepath.Join(dir, "delegate.md"))
+		// /delegate is installed unconditionally: the legacy path needs
+		// tmux, but the --bg path dispatches via `claude --bg` and has no
+		// tmux dependency. The launch script itself enforces the right
+		// mode at call time (rejecting --no-bg invocations without $TMUX
+		// with a clear "pass --bg or run inside tmux" message).
+		{"delegate.md", delegateSlashCommand},
 	}
 	for _, sc := range commands {
 		path := filepath.Join(dir, sc.name)
@@ -563,22 +563,22 @@ func ensureHandoffSlashCommand() error {
 	}
 	// Bundled helper scripts the slash commands invoke via ${CLAUDE_PLUGIN_ROOT}.
 	// Keeps the slash-command bodies short and the orchestration logic auditable
-	// (and unit-testable) as plain bash. chmod 0o755 so they're executable.
-	// Only written when tmux is available since the scripts are /delegate-only.
-	if tmuxAvailable() {
-		scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
-		if err := os.MkdirAll(scriptDir, 0o755); err != nil {
-			return err
-		}
-		for _, s := range []struct{ name, body string }{
-			{"delegate-launch.sh", delegateLaunchScript},
-			{"delegate-watch.sh", delegateWatchScript},
-		} {
-			path := filepath.Join(scriptDir, s.name)
-			if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
-				if err := os.WriteFile(path, []byte(s.body), 0o755); err != nil {
-					return err
-				}
+	// (and unit-testable) as plain bash. chmod 0o755 so they're executable. The
+	// launch script handles both bg and tmux modes; the watch script is only
+	// useful in tmux mode but writing it unconditionally is harmless (the bg
+	// path never invokes it).
+	scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		return err
+	}
+	for _, s := range []struct{ name, body string }{
+		{"delegate-launch.sh", delegateLaunchScript},
+		{"delegate-watch.sh", delegateWatchScript},
+	} {
+		path := filepath.Join(scriptDir, s.name)
+		if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
+			if err := os.WriteFile(path, []byte(s.body), 0o755); err != nil {
+				return err
 			}
 		}
 	}

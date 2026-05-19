@@ -117,20 +117,21 @@ func cmdDelegateBgDispatch(args []string) {
 		}
 	}
 
-	// Settings: write the profile's inline _settings to a temp file so
-	// --settings takes the same path-style argument as the wrapper. Stop
-	// hooks (e.g. distill) propagate through this file into the bg session.
+	// Settings: write the profile's inline _settings beside the request,
+	// so --settings takes the same path-style argument as the wrapper. The
+	// file lives in the delegate dir (not os.TempDir) so it gets cleaned
+	// up alongside request.json / bg-session-id.txt / result.md when the
+	// user reaps the delegate, instead of leaking into /tmp on every
+	// dispatch. Stop hooks (e.g. distill) propagate through this file
+	// into the bg session — failing to write means the delegate would
+	// silently lose its hooks, so we fail dispatch loudly instead.
 	settingsPath := ""
 	if len(p.Settings) > 0 {
-		f, err := os.CreateTemp("", "claude-profiles-delegate-bg-*.json")
-		if err == nil {
-			f.Write(p.Settings)
-			f.Close()
-			settingsPath = f.Name()
-			// Do not defer os.Remove — the bg session is read-once at
-			// startup but Claude Code may re-read it on respawn. Leak is
-			// negligible (a few KB per delegate); cleanup is the user's
-			// responsibility via `claude rm`.
+		settingsPath = filepath.Join(dir, "settings.json")
+		if err := os.WriteFile(settingsPath, p.Settings, 0o644); err != nil {
+			body := fmt.Sprintf("(delegate %s failed to write settings.json: %v)", delegateID, err)
+			writeDelegateResult(dir, body)
+			fatal(fmt.Errorf("write %s: %v", settingsPath, err))
 		}
 	}
 
@@ -389,9 +390,9 @@ func parseBackgroundedID(out string) string {
 			continue
 		}
 		rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		// Drop the middle-dot separator if present (either Unicode "·"
-		// U+00B7 or its compatibility forms).
-		rest = strings.TrimLeft(rest, "··- \t")
+		// Drop the middle-dot separator (U+00B7) the CLI prints between
+		// "backgrounded" and the short id, plus its ASCII fallbacks.
+		rest = strings.TrimLeft(rest, "·- \t")
 		// First whitespace token is the id.
 		fields := strings.Fields(rest)
 		if len(fields) > 0 {
@@ -404,15 +405,19 @@ func parseBackgroundedID(out string) string {
 // bgDisplayName produces a stable, human-readable name for the bg
 // session. Agent View rows are sorted by this; keeping the profile
 // first makes cross-profile dispatches easy to read at a glance.
+//
+// Truncation is rune-aware (not byte-based): tasks in non-ASCII text
+// must not be split mid-rune, otherwise Agent View renders replacement
+// glyphs in the row name.
 func bgDisplayName(profile, task string) string {
-	const maxTaskLen = 50
+	const maxTaskRunes = 50
 	t := strings.TrimSpace(task)
-	if len(t) > maxTaskLen {
-		t = t[:maxTaskLen] + "…"
-	}
 	// Strip newlines so the name renders as a single row entry.
 	t = strings.ReplaceAll(t, "\n", " ")
 	t = strings.ReplaceAll(t, "\r", " ")
+	if runes := []rune(t); len(runes) > maxTaskRunes {
+		t = string(runes[:maxTaskRunes]) + "…"
+	}
 	return profile + ": " + t
 }
 
