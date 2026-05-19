@@ -391,8 +391,8 @@ func cmdNew() {
 	fmt.Fprintln(os.Stderr)
 
 	name := strings.ReplaceAll(prompt("Profile name"), " ", "-")
-	if name == "" {
-		fatal(fmt.Errorf("name required"))
+	if err := validateNewProfileName(name); err != nil {
+		fatal(err)
 	}
 
 	scope := pickScope() // "user" or "project"
@@ -885,6 +885,16 @@ func cmdExport(args []string) {
 	if len(args) > 0 {
 		arg = args[0]
 	}
+	if arg == "" {
+		// Move the picker up so the built-in guard catches both the explicit-arg
+		// and picker paths. Without this the picker can return ":default", which
+		// then fails inside loadProfile with a confusing "no such file" error.
+		picked, err := pickProfile()
+		if err != nil {
+			fatal(err)
+		}
+		arg = picked
+	}
 	if loc := resolveBuiltinLocation(arg); loc != nil {
 		fatal(fmt.Errorf("built-in profiles (%s) are constants — nothing to export", loc.QualifiedID))
 	}
@@ -926,6 +936,9 @@ func cmdImport(args []string) {
 	name := strings.ReplaceAll(promptWithDefault("Profile name", defaultName), " ", "-")
 	if name == "" {
 		name = defaultName
+	}
+	if err := validateNewProfileName(name); err != nil {
+		fatal(err)
 	}
 
 	if profileExists(name) {
@@ -1175,6 +1188,9 @@ func cmdCopy(args []string) {
 		dstName = promptWithDefault("Local profile name", loc.Name)
 	}
 	dstName = strings.ReplaceAll(dstName, " ", "-")
+	if err := validateNewProfileName(dstName); err != nil {
+		fatal(err)
+	}
 	if profileExists(dstName) {
 		if !confirm(fmt.Sprintf("Local profile %q exists. Overwrite?", dstName)) {
 			fmt.Fprintln(os.Stderr, "Aborted.")

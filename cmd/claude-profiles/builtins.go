@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -91,6 +92,30 @@ func resolveBuiltinLocation(id string) *ProfileLocation {
 				Builtin:     b.kind,
 			}
 		}
+	}
+	return nil
+}
+
+// isBuiltinID reports whether id matches one of the reserved built-in
+// identifiers. Used at profile-creation time to refuse names that would
+// later be shadowed by the built-in resolution in resolveProfileLocation.
+func isBuiltinID(id string) bool {
+	return resolveBuiltinLocation(id) != nil
+}
+
+// validateNewProfileName returns an error when name would collide with the
+// reserved built-in namespace or contain characters that break QualifiedID
+// parsing ("/" is the repo-alias separator). Called from cmdNew / cmdImport /
+// cmdCopy so the bad state never reaches disk.
+func validateNewProfileName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	if strings.HasPrefix(name, ":") {
+		return fmt.Errorf("profile name %q is reserved — names starting with ':' belong to built-in profiles (:default, :project)", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("profile name %q cannot contain '/' or '\\' — reserved for repo qualifiers (alias/name)", name)
 	}
 	return nil
 }

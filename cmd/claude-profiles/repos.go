@@ -462,7 +462,19 @@ func repoProfilesRoot(repoRoot string) string {
 //   - "alias/name"    → registered repo profile
 func resolveProfileLocation(id string) (*ProfileLocation, error) {
 	// Built-in profiles (":default", ":project") — synthetic, no disk lookup.
+	// Refuse to resolve when a real profile shares the reserved name; the
+	// alternative would be to silently shadow the user's profile and lose its
+	// previous ID. validateNewProfileName guards against creation today but
+	// installations from before this PR may still have a colliding profile.
 	if loc := resolveBuiltinLocation(id); loc != nil {
+		if profileExists(id) {
+			return nil, fmt.Errorf("local profile %q collides with built-in name — rename or delete %s", id, filepath.Join(profilesDir(), id))
+		}
+		for _, pl := range listCwdProfileLocations() {
+			if pl.Name == id {
+				return nil, fmt.Errorf("project profile %q collides with built-in name — rename .claude-profiles/%s/", id, id)
+			}
+		}
 		return loc, nil
 	}
 	// "./name" explicitly targets the project-local profile in the CWD.
