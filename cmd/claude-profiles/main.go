@@ -365,6 +365,8 @@ func cmdList() {
 		}
 		source := "[local]"
 		switch {
+		case loc.Builtin != "":
+			source = "[builtin]"
 		case loc.RepoAlias == ".":
 			source = "[project]"
 		case loc.RepoAlias != "":
@@ -389,8 +391,8 @@ func cmdNew() {
 	fmt.Fprintln(os.Stderr)
 
 	name := strings.ReplaceAll(prompt("Profile name"), " ", "-")
-	if name == "" {
-		fatal(fmt.Errorf("name required"))
+	if err := validateNewProfileName(name); err != nil {
+		fatal(err)
 	}
 
 	scope := pickScope() // "user" or "project"
@@ -584,6 +586,9 @@ func cmdEdit(args []string) {
 	loc, err := resolveProfileLocation(arg)
 	if err != nil {
 		fatal(err)
+	}
+	if loc.Builtin != "" {
+		fatal(fmt.Errorf("built-in profiles (%s) are constants — nothing to edit", loc.QualifiedID))
 	}
 	// Non-TTY fallback: open the profile folder directly in $EDITOR.
 	if !isTTY() {
@@ -855,6 +860,9 @@ func cmdDelete(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	if loc.Builtin != "" {
+		fatal(fmt.Errorf("built-in profiles (%s) can't be deleted — use `h` in the hub palette to hide instead", loc.QualifiedID))
+	}
 	if loc.RepoAlias == "." {
 		fatal(fmt.Errorf("project profiles can't be deleted from here — remove .claude-profiles/%s/ from your repo", loc.Name))
 	}
@@ -876,6 +884,19 @@ func cmdExport(args []string) {
 	arg := ""
 	if len(args) > 0 {
 		arg = args[0]
+	}
+	if arg == "" {
+		// Move the picker up so the built-in guard catches both the explicit-arg
+		// and picker paths. Without this the picker can return ":default", which
+		// then fails inside loadProfile with a confusing "no such file" error.
+		picked, err := pickProfile()
+		if err != nil {
+			fatal(err)
+		}
+		arg = picked
+	}
+	if loc := resolveBuiltinLocation(arg); loc != nil {
+		fatal(fmt.Errorf("built-in profiles (%s) are constants — nothing to export", loc.QualifiedID))
 	}
 	name, err := resolveProfile(arg)
 	if err != nil {
@@ -915,6 +936,9 @@ func cmdImport(args []string) {
 	name := strings.ReplaceAll(promptWithDefault("Profile name", defaultName), " ", "-")
 	if name == "" {
 		name = defaultName
+	}
+	if err := validateNewProfileName(name); err != nil {
+		fatal(err)
 	}
 
 	if profileExists(name) {
@@ -1149,6 +1173,9 @@ func cmdCopy(args []string) {
 		fatal(fmt.Errorf("usage: claude-profiles copy <alias/profile> [<local-name>]"))
 	}
 	srcID := args[0]
+	if loc := resolveBuiltinLocation(srcID); loc != nil {
+		fatal(fmt.Errorf("built-in profiles (%s) can't be copied — they're constants, not on-disk profiles", loc.QualifiedID))
+	}
 	if !strings.Contains(srcID, "/") {
 		fatal(fmt.Errorf("source must be a repo profile (alias/name); local profiles are already editable"))
 	}
@@ -1164,6 +1191,9 @@ func cmdCopy(args []string) {
 		dstName = promptWithDefault("Local profile name", loc.Name)
 	}
 	dstName = strings.ReplaceAll(dstName, " ", "-")
+	if err := validateNewProfileName(dstName); err != nil {
+		fatal(err)
+	}
 	if profileExists(dstName) {
 		if !confirm(fmt.Sprintf("Local profile %q exists. Overwrite?", dstName)) {
 			fmt.Fprintln(os.Stderr, "Aborted.")

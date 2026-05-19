@@ -54,6 +54,8 @@ func writeProfileDetail(w io.Writer, loc *ProfileLocation, p *Profile) {
 
 	source := "local"
 	switch {
+	case loc.Builtin != "":
+		source = "builtin"
 	case loc.RepoAlias == ".":
 		source = "project"
 	case loc.RepoAlias != "":

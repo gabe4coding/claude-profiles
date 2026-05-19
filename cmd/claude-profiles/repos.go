@@ -246,6 +246,13 @@ type ProfileLocation struct {
 	// or above CWD or via the known-projects cache; for those, delegate-runner
 	// enforces that req.Dir is under OwnerRepo when the profile has _worktree.
 	OwnerRepo string
+	// Builtin, when non-empty, marks this location as one of the synthetic
+	// built-in profiles. JSONPath points at the "<builtin:kind>/profile.json"
+	// sentinel — there's no real file on disk. Callers that build CLI flags
+	// must skip --strict-mcp-config / --mcp-config for built-ins so claude
+	// resolves MCP servers from its native sources (.mcp.json for project
+	// scope, user-scope MCP config otherwise).
+	Builtin string
 }
 
 // findCwdProfilesDir walks up from the current working directory looking for a
@@ -454,6 +461,17 @@ func repoProfilesRoot(repoRoot string) string {
 //   - "./name"        → project-local (.claude-profiles/ in CWD) explicitly
 //   - "alias/name"    → registered repo profile
 func resolveProfileLocation(id string) (*ProfileLocation, error) {
+	// Built-in profiles (":default", ":project") — synthetic, no disk lookup.
+	// Refuse to resolve when a real profile shares the reserved name; the
+	// alternative would be to silently shadow the user's profile and lose its
+	// previous ID. validateNewProfileName guards against creation today but
+	// installations from before this PR may still have a colliding profile.
+	if loc := resolveBuiltinLocation(id); loc != nil {
+		if msg := builtinCollisionMessage(id); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return loc, nil
+	}
 	// "./name" explicitly targets the project-local profile in the CWD.
 	if strings.HasPrefix(id, "./") {
 		name := id[2:]
@@ -574,11 +592,41 @@ func isCwdUnder(cwd, pinCwd string) bool {
 	return !strings.HasPrefix(rel, "..")
 }
 
-// listAllLocations returns local + project + repo profiles, sorted with local first.
+// builtinCollisionMessage returns a non-empty diagnostic when id is a
+// reserved built-in name AND a real on-disk profile (local, project, known
+// project from another repo) already claims it. Returns "" when there is no
+// collision. Used by resolveProfileLocation to refuse ambiguous resolutions
+// and by listAllLocations to omit shadowed built-ins.
+func builtinCollisionMessage(id string) string {
+	if profileExists(id) {
+		return fmt.Sprintf("local profile %q collides with built-in name — rename or delete %s", id, filepath.Join(profilesDir(), id))
+	}
+	for _, pl := range listCwdProfileLocations() {
+		if pl.Name == id {
+			return fmt.Sprintf("project profile %q collides with built-in name — rename .claude-profiles/%s/", id, id)
+		}
+	}
+	for _, pl := range listKnownProjectLocations() {
+		if pl.Name == id {
+			return fmt.Sprintf("project profile %q from %s collides with built-in name — rename .claude-profiles/%s/ in that repo", id, pl.OwnerRepo, id)
+		}
+	}
+	return ""
+}
+
+// listAllLocations returns built-ins + local + project + repo profiles. Built-ins
+// are prepended so the hub and SessionStart hook surface them first; they are
+// silently dropped on QualifiedID collision so an existing on-disk profile keeps
+// its place (the launch path then refuses via builtinCollisionMessage).
 // Local profiles that have a _cwd pin are omitted unless the current working
 // directory is equal to or nested under that pin.
 func listAllLocations() ([]ProfileLocation, error) {
 	var out []ProfileLocation
+	for _, b := range builtinLocations() {
+		if builtinCollisionMessage(b.QualifiedID) == "" {
+			out = append(out, b)
+		}
+	}
 	localNames, err := listProfiles()
 	if err != nil {
 		return nil, err
