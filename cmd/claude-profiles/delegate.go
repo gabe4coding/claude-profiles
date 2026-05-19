@@ -384,9 +384,14 @@ func cmdDelegateRunner(args []string) {
 	// to fail at --strict-mcp-config because loc.JSONPath points at a missing
 	// profile.json — the delegate would exit without writing a session and the
 	// result would be "(delegate exited without a final assistant reply)".
-	mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
-	if _, err := os.Stat(mcpConfigPath); err != nil {
-		mcpConfigPath = loc.JSONPath
+	// Built-ins skip --mcp-config entirely so claude uses native discovery.
+	claudeArgs := []string{"claude"}
+	if loc.Builtin == "" {
+		mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+		if _, err := os.Stat(mcpConfigPath); err != nil {
+			mcpConfigPath = loc.JSONPath
+		}
+		claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcpConfigPath)
 	}
 
 	// Working dir the delegate's claude process starts in. Mirrors cmd.Dir set
@@ -402,7 +407,6 @@ func cmdDelegateRunner(args []string) {
 	// instead. With a deterministic worktree name we know exactly where Claude
 	// will write the session .jsonl, eliminating the "scan every project dir
 	// and guess" workaround that drove the old session-discovery code.
-	claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 	pcopy := *p
 	pcopy.Settings = nil
 	pcopy.Worktree = false

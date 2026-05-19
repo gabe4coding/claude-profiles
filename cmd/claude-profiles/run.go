@@ -215,17 +215,25 @@ func cmdRun(args []string) {
 		firstIteration = false
 
 		settingsPath := ""
-		if augmented, err := runSettingsWithHook(p, ""); err == nil {
-			settingsPath = augmented
+		if loc.Builtin == "" {
+			if augmented, err := runSettingsWithHook(p, ""); err == nil {
+				settingsPath = augmented
+			}
 		}
 
-		// Use .mcp.json when present (split format); fall back to profile.json
-		// for old combined format, repo profiles, and project profiles.
-		mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
-		if _, err := os.Stat(mcpConfigPath); err != nil {
-			mcpConfigPath = loc.JSONPath
+		// For real profiles: pin claude to the profile's MCP config (split
+		// format prefers .mcp.json; combined format falls back to profile.json).
+		// For built-ins: skip both --strict-mcp-config and --mcp-config so
+		// claude uses its native MCP discovery — that's the whole point of the
+		// built-in profiles.
+		claudeArgs := []string{"claude"}
+		if loc.Builtin == "" {
+			mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+			if _, err := os.Stat(mcpConfigPath); err != nil {
+				mcpConfigPath = loc.JSONPath
+			}
+			claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcpConfigPath)
 		}
-		claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 		claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
 		// Always load the wrapper-plugin so /handoff survives --setting-sources=
 		// in isolated mode. The plugin is a tiny dir containing commands/

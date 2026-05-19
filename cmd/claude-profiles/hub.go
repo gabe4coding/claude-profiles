@@ -267,7 +267,7 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 		}
 	}
 
-	var projectLocs, userLocs, disabledLocs []ProfileLocation
+	var builtinLocs, projectLocs, userLocs, disabledLocs []ProfileLocation
 	repoLocs := map[string][]ProfileLocation{}
 	for _, loc := range m.locs {
 		if isDisabled(loc) {
@@ -275,6 +275,8 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 			continue
 		}
 		switch {
+		case loc.Builtin != "":
+			builtinLocs = append(builtinLocs, loc)
 		case loc.RepoAlias == ".":
 			projectLocs = append(projectLocs, loc)
 		case loc.RepoAlias != "":
@@ -341,6 +343,7 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 			items = append(items, makeItem(loc, pinned, "", "", sectionAlias))
 		}
 	}
+	addLocs("Built-in", builtinLocs, "")
 	addLocs("Project", projectLocs, "")
 	addLocs("User", userLocs, "")
 	for _, alias := range sortedAliases {
@@ -447,21 +450,33 @@ func (m hubModel) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.result = hubResult{action: actNew}
 		return m, tea.Quit
 	case "e":
+		if m.selectedIsBuiltin() {
+			return m, nil // built-ins have nothing to edit
+		}
 		if it := m.selectedID(); it != "" {
 			m.result = hubResult{action: actEdit, profile: it}
 			return m, tea.Quit
 		}
 	case "d":
+		if m.selectedIsBuiltin() {
+			return m, nil // built-ins can't be deleted
+		}
 		if it := m.selectedID(); it != "" {
 			m.result = hubResult{action: actDelete, profile: it}
 			return m, tea.Quit
 		}
 	case "c":
+		if m.selectedIsBuiltin() {
+			return m, nil // copying a built-in is meaningless — no overlay to copy
+		}
 		if it := m.selectedID(); it != "" {
 			m.result = hubResult{action: actCopy, profile: it}
 			return m, tea.Quit
 		}
 	case "x":
+		if m.selectedIsBuiltin() {
+			return m, nil // built-ins have nothing to export — they're constants
+		}
 		if it := m.selectedID(); it != "" {
 			m.result = hubResult{action: actExport, profile: it}
 			return m, tea.Quit
@@ -598,6 +613,17 @@ func (m hubModel) selectedID() string {
 		return ""
 	}
 	return it.loc.QualifiedID
+}
+
+// selectedIsBuiltin reports whether the currently-highlighted row is one of
+// the synthetic built-in profiles. Built-ins cannot be edited / deleted /
+// copied / exported — those actions become no-ops in the palette.
+func (m hubModel) selectedIsBuiltin() bool {
+	it, ok := m.list.SelectedItem().(profileItem)
+	if !ok {
+		return false
+	}
+	return it.loc.Builtin != ""
 }
 
 func (m hubModel) View() string {
@@ -930,6 +956,8 @@ func computeModalTags(locs []ProfileLocation) modalTags {
 	modeCounts := map[string]int{}
 	for _, loc := range locs {
 		switch {
+		case loc.Builtin != "":
+			sourceCounts["builtin"]++
 		case loc.RepoAlias == ".":
 			sourceCounts["project"]++
 		case loc.RepoAlias != "":
@@ -977,6 +1005,8 @@ func computeModalTags(locs []ProfileLocation) modalTags {
 func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession, pinned bool, pinnedPromptName string, modal modalTags, sectionRepoAlias string) string {
 	source := "local"
 	switch {
+	case loc.Builtin != "":
+		source = "builtin"
 	case loc.RepoAlias == ".":
 		source = "project"
 	case loc.RepoAlias != "":

@@ -464,6 +464,8 @@ func shortenCwd(cwd string) string {
 func locationLabel(loc ProfileLocation) string {
 	var source string
 	switch {
+	case loc.Builtin != "":
+		source = styleInfo.Render("builtin")
 	case loc.RepoAlias == ".":
 		source = styleInfo.Render("project")
 	case loc.RepoAlias != "":

@@ -246,6 +246,13 @@ type ProfileLocation struct {
 	// or above CWD or via the known-projects cache; for those, delegate-runner
 	// enforces that req.Dir is under OwnerRepo when the profile has _worktree.
 	OwnerRepo string
+	// Builtin, when non-empty, marks this location as one of the synthetic
+	// built-in profiles. JSONPath points at the "<builtin:kind>/profile.json"
+	// sentinel — there's no real file on disk. Callers that build CLI flags
+	// must skip --strict-mcp-config / --mcp-config for built-ins so claude
+	// uses its native MCP discovery (.mcp.json for project scope, ~/.claude.json
+	// for user scope).
+	Builtin string
 }
 
 // findCwdProfilesDir walks up from the current working directory looking for a
@@ -454,6 +461,10 @@ func repoProfilesRoot(repoRoot string) string {
 //   - "./name"        → project-local (.claude-profiles/ in CWD) explicitly
 //   - "alias/name"    → registered repo profile
 func resolveProfileLocation(id string) (*ProfileLocation, error) {
+	// Built-in profiles (":default", ":project") — synthetic, no disk lookup.
+	if loc := resolveBuiltinLocation(id); loc != nil {
+		return loc, nil
+	}
 	// "./name" explicitly targets the project-local profile in the CWD.
 	if strings.HasPrefix(id, "./") {
 		name := id[2:]
@@ -578,7 +589,9 @@ func isCwdUnder(cwd, pinCwd string) bool {
 // Local profiles that have a _cwd pin are omitted unless the current working
 // directory is equal to or nested under that pin.
 func listAllLocations() ([]ProfileLocation, error) {
-	var out []ProfileLocation
+	// Built-ins go first so they're easy to find in the hub and in the
+	// SessionStart hook's "Available profiles" listing.
+	out := builtinLocations()
 	localNames, err := listProfiles()
 	if err != nil {
 		return nil, err

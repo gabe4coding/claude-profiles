@@ -166,6 +166,12 @@ type Profile struct {
 	// Empty or "off" disables. Default off — writes to committed surfaces are
 	// opt-in. Overridable via ProfilePrefs.Distill or DISTILL_ON_STOP=0 env var.
 	Distill string `json:"_distill,omitempty"`
+	// Builtin, when non-empty, marks this Profile as one of the synthetic
+	// built-in profiles (":default", ":project"). Built-ins have no directory
+	// on disk; their behaviour comes from claudeFlags emitting a specific
+	// --setting-sources value (or no flag at all). Never serialised — the
+	// json tag is "-" so it can't leak into prefs / export.
+	Builtin string `json:"-"`
 }
 
 // ── Settings (JSON map) helpers ──────────────────────────────────────────────
@@ -417,6 +423,15 @@ func isProfileDir(dir string) bool {
 // metadata (_description, _isolated, _prompts) while still loading .mcp.json
 // and settings.json from the same directory.
 func loadProfileAt(path string) (*Profile, error) {
+	// Built-in sentinel: short-circuit before any disk I/O or prefs merge.
+	// Disabled state for built-ins is still consulted by callers via the
+	// prefs store keyed on filepath.Dir(JSONPath) — that key is the unique
+	// "<builtin:kind>" string, distinct per built-in.
+	if kind, ok := builtinKindFromPath(path); ok {
+		if p := builtinProfileFor(kind); p != nil {
+			return p, nil
+		}
+	}
 	var p Profile
 	profileFileExists := false
 	data, err := os.ReadFile(path)
@@ -533,6 +548,17 @@ func pluginJSONDescription(profileRoot string) string {
 //   - --setting-sources= when Isolated, so claude loads NO user/project/local
 //                        settings — only the explicit --settings file applies.
 func claudeFlags(p *Profile, settingsPath string) []string {
+	// Built-in profiles bypass all the normal overlay logic. The whole point
+	// of :default and :project is to expose claude's native settings hierarchy
+	// without us imposing an extra --settings file or --setting-sources= empty.
+	if p.Builtin != "" {
+		switch p.Builtin {
+		case "project":
+			return []string{"--setting-sources=project,local"}
+		default:
+			return nil
+		}
+	}
 	var args []string
 	switch {
 	case settingsPath != "":

@@ -365,6 +365,8 @@ func cmdList() {
 		}
 		source := "[local]"
 		switch {
+		case loc.Builtin != "":
+			source = "[builtin]"
 		case loc.RepoAlias == ".":
 			source = "[project]"
 		case loc.RepoAlias != "":
@@ -584,6 +586,9 @@ func cmdEdit(args []string) {
 	loc, err := resolveProfileLocation(arg)
 	if err != nil {
 		fatal(err)
+	}
+	if loc.Builtin != "" {
+		fatal(fmt.Errorf("built-in profiles (%s) are constants — nothing to edit", loc.QualifiedID))
 	}
 	// Non-TTY fallback: open the profile folder directly in $EDITOR.
 	if !isTTY() {
@@ -855,6 +860,9 @@ func cmdDelete(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	if loc.Builtin != "" {
+		fatal(fmt.Errorf("built-in profiles (%s) can't be deleted — use `h` in the hub palette to hide instead", loc.QualifiedID))
+	}
 	if loc.RepoAlias == "." {
 		fatal(fmt.Errorf("project profiles can't be deleted from here — remove .claude-profiles/%s/ from your repo", loc.Name))
 	}
@@ -876,6 +884,9 @@ func cmdExport(args []string) {
 	arg := ""
 	if len(args) > 0 {
 		arg = args[0]
+	}
+	if loc := resolveBuiltinLocation(arg); loc != nil {
+		fatal(fmt.Errorf("built-in profiles (%s) are constants — nothing to export", loc.QualifiedID))
 	}
 	name, err := resolveProfile(arg)
 	if err != nil {
