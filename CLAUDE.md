@@ -14,6 +14,17 @@ GOPRIVATE=github.com/gabe4coding/claude-profiles go install github.com/gabe4codi
 
 Every change ships with a working smoke test. If the affected surface has no test harness, add (or extend) a runnable script under `scripts/` — e.g. `./scripts/smoke-distill.sh` covers the Stop-hook distill filters. The script must be re-runnable from a clean checkout, exit non-zero on regression, and clean up its temp state. If a meaningful smoke test would require disproportionate setup (sandboxed network, real Claude session, manual user interaction), tell the user explicitly rather than skipping verification.
 
+## Session handoffs
+
+If a file named `HANDOFF.md` exists at the repo root at the start of a session, that's pending work from a previous session that may or may not be relevant to the current task. Before doing anything else:
+
+1. Read `HANDOFF.md` (it's designed to be self-contained — the first paragraph is a one-sentence summary of the pending work).
+2. Ask the user, in one question, whether to continue from the handoff. Quote the one-sentence summary verbatim so the user knows what they're agreeing to.
+3. If yes: follow the handoff. Resume from the open items listed there.
+4. If no: ask whether to **delete `HANDOFF.md`** now, and on what grounds — `feature complete` (the pending work shipped end-to-end since the handoff was written) or `dropped` (the user is abandoning that work). Delete the file on the user's confirmation. Do not delete it without an explicit "complete" or "dropped" — leaving it in place is the safe default if the user is unsure.
+
+When you finish a piece of work that should survive a context reset (you completed an act but more acts remain; or you paused mid-feature), write or update `HANDOFF.md` yourself before the session ends. Keep the one-sentence summary at the top accurate; future sessions will quote it back to the user verbatim.
+
 ## Non-obvious invariants
 
 **Profile prefs keys are main-repo absolute paths.**
@@ -42,3 +53,6 @@ The Go field is `Disabled` but the on-disk JSON tag is `_hidden` to stay compati
 
 **Distill bookmark advances on block emission, not on completion.**
 `saveLastDistillBookmark` writes the current HEAD SHA to `~/.claude-profiles/last-distill/<safeID>.json` *before* the Stop hook emits its `decision:block`, not after Claude finishes the distillation. Consequence: if Claude crashes, skips, or no-ops the distillation, the next hook still treats those commits as "already prompted" and won't re-fire until a new commit lands. This is the deliberate tradeoff — guaranteed no duplicate prompts on the same work, at the cost of rare missed distillations. If you want post-completion bookmarking, you need a second hook firing after the distill-block run completes; the current Stop hook has no signal that the next turn succeeded.
+
+**`/delegate` has two execution backends; `result.md` is the shared integration point.**
+The tmux path (`cmdDelegateRunner`) and the `--bg` path (`cmdDelegateBgDispatch` + `cmdDelegateBgWatcher` in `delegate_bg.go`) both write the delegate's final reply to `~/.claude-profiles/delegates/<parent-sid>/<id>/result.md`. The parent's `cmdHookPromptSubmit` is path-agnostic — it consumes `result.md` regardless of which backend produced it. The `--bg` watcher polls `~/.claude/jobs/<bg-id>/state.json`; the field `linkScanPath` is the authoritative JSONL path. **Do not** make the hook backend-aware: keeping `result.md` as the contract is what lets the two backends coexist (and what lets Atto III later swap the protocol without touching consumers).

@@ -94,6 +94,10 @@ func main() {
 		cmdHookStop()
 	case "_delegate-runner":
 		cmdDelegateRunner(args[1:])
+	case "_delegate-bg-dispatch":
+		cmdDelegateBgDispatch(args[1:])
+	case "_delegate-bg-watcher":
+		cmdDelegateBgWatcher(args[1:])
 	case "doctor":
 		cmdDoctor()
 	case "analytics", "stats":
@@ -298,6 +302,17 @@ func runHubAction(r hubResult) {
 		cmdAnalytics(nil)
 		fmt.Fprintln(os.Stderr, "Press Enter to return to the menu...")
 		bufio.NewReader(os.Stdin).ReadBytes('\n')
+	case actAgentView:
+		// Scope Agent View to the hub's main-tree repo root when we can
+		// resolve one, so a hub opened inside a worktree still surfaces
+		// every bg session dispatched against the same project. Passing
+		// no --cwd would show every bg session on the machine, which is
+		// confusing when the user is mentally in one repo.
+		root := ""
+		if cwd, err := os.Getwd(); err == nil {
+			root = mainRepoRoot(cwd)
+		}
+		cmdOpenAgentView(root)
 	}
 }
 

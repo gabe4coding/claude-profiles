@@ -30,31 +30,59 @@ import (
 //      context, and renames them to delivered.md so they're not re-injected.
 
 const delegateLaunchScript = `#!/bin/bash
-# Usage: delegate-launch.sh <profile-id> [--dir <path>] <task...>
-# Sets up a /delegate request, spawns the delegate in a new tmux window,
-# and prints DELEGATE_ID, DELEGATE_WINDOW, and DELEGATE_JSONL to stdout so
-# the parent agent can stream progress via delegate-watch.sh.
+# Usage: delegate-launch.sh <profile-id> [--bg] [--dir <path>] <task...>
+# Sets up a /delegate request and dispatches the delegate. Two modes:
+#
+#   tmux mode (default): spawn the delegate in a new tmux window via
+#     ` + "`claude-profiles _delegate-runner`" + `. Prints DELEGATE_ID, DELEGATE_WINDOW,
+#     DELEGATE_RESULT, DELEGATE_DIR, DELEGATE_JSONL.
+#
+#   bg mode (--bg): dispatch via ` + "`claude --bg`" + ` and rely on Agent View's
+#     supervisor. Prints DELEGATE_ID, DELEGATE_BG_ID, DELEGATE_BG_NAME,
+#     DELEGATE_RESULT, DELEGATE_DIR. No DELEGATE_WINDOW / DELEGATE_JSONL.
 
 set -e
 
 if [ -z "$CLAUDE_PROFILES_RUN" ]; then echo "/delegate only works inside claude-profiles run wrapper" >&2; exit 1; fi
-if [ -z "$TMUX" ]; then echo "/delegate requires tmux. Run claude-profiles inside a tmux session." >&2; exit 1; fi
 if [ -z "$CLAUDE_PROFILES_WRAPPER_PID" ]; then echo "/delegate cannot find the wrapper PID. Restart your claude-profiles run wrapper to pick up the env var." >&2; exit 1; fi
 
 PROFILE="$1"; shift
 
-# Optional --dir <path>: resolve to absolute now, while we still have the
-# parent's cwd. The runner launches in a different tmux window with a
-# different inherited cwd, so relative paths would silently resolve wrong.
+# Optional leading flags, in any order:
+#   --bg            dispatch via claude --bg (Agent View), no tmux required
+#   --dir <path>    resolve to absolute now, while we still have the parent's cwd
+BG_MODE=""
 REPO_DIR=""
-if [ "$1" = "--dir" ]; then
-  if [ -z "$2" ]; then echo "delegate-launch.sh: --dir requires a path argument" >&2; exit 1; fi
-  REPO_DIR=$(cd "$2" && pwd) || { echo "delegate-launch.sh: --dir path does not exist: $2" >&2; exit 1; }
-  shift 2
+while true; do
+  case "${1:-}" in
+    --bg)
+      BG_MODE=1
+      shift
+      ;;
+    --dir)
+      if [ -z "${2:-}" ]; then echo "delegate-launch.sh: --dir requires a path argument" >&2; exit 1; fi
+      REPO_DIR=$(cd "$2" && pwd) || { echo "delegate-launch.sh: --dir path does not exist: $2" >&2; exit 1; }
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Honour the env-var form too: lets users default the whole hub to bg mode.
+if [ "${CLAUDE_PROFILES_DELEGATE_BG:-}" = "1" ]; then
+  BG_MODE=1
+fi
+
+# tmux mode still requires tmux. bg mode does not — that's its whole point.
+if [ -z "$BG_MODE" ] && [ -z "$TMUX" ]; then
+  echo "/delegate requires tmux. Run claude-profiles inside a tmux session, or pass --bg." >&2
+  exit 1
 fi
 
 TASK="$*"
-if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--dir <path>] <task...>" >&2; exit 1; fi
+if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--bg] [--dir <path>] <task...>" >&2; exit 1; fi
 
 PARENT_SID=$(jq -r '.session_id // empty' "$HOME/.claude-profiles/run/${CLAUDE_PROFILES_WRAPPER_PID}.json" 2>/dev/null)
 if [ -z "$PARENT_SID" ]; then echo "/delegate cannot find the parent session id yet — wait a few seconds and retry." >&2; exit 1; fi
@@ -71,12 +99,21 @@ jq -nc \
   '{profile: $profile, task: $task, parent_session: $parent, delegate_id: $id, dir: $dir}' \
   > "$DIR/request.json"
 
-tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DELG_ID"
-
 echo "DELEGATE_ID=$DELG_ID"
-echo "DELEGATE_WINDOW=delegate-$DELG_ID"
 echo "DELEGATE_RESULT=$DIR/result.md"
 echo "DELEGATE_DIR=$DIR"
+
+if [ -n "$BG_MODE" ]; then
+  # Hand off to Go: it reads request.json, builds the claude --bg
+  # invocation from the profile flags, captures the short id, spawns the
+  # bg state watcher, and prints DELEGATE_BG_ID / DELEGATE_BG_NAME.
+  claude-profiles _delegate-bg-dispatch "$DELG_ID"
+  exit 0
+fi
+
+# tmux path (default): spawn the delegate's claude in a detached window.
+tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DELG_ID"
+echo "DELEGATE_WINDOW=delegate-$DELG_ID"
 
 # Wait up to 20s for the runner to discover and announce its .jsonl path.
 # Claude can take 10+s to write its first session line on slow startups (MCP
@@ -223,8 +260,8 @@ fi
 `
 
 const delegateSlashCommand = `---
-description: Delegate an interactive subtask to another profile in a new tmux window. The delegate runs autonomously; progress streams back live and the final answer is read out of result.md immediately when the delegate finishes.
-argument-hint: <profile-id|intent> [--dir <path>] [task...]
+description: Delegate an interactive subtask to another profile. Default mode opens a tmux window and streams progress live; --bg mode dispatches via Claude Code Agent View (claude --bg) and the result is delivered on your next prompt via the UserPromptSubmit hook.
+argument-hint: <profile-id|intent> [--bg] [--dir <path>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
 The user typed ` + "`/delegate $ARGUMENTS`" + `.
@@ -233,28 +270,46 @@ The user typed ` + "`/delegate $ARGUMENTS`" + `.
 
 Parse $ARGUMENTS:
 - First whitespace-separated token = profile selector (free-form intent → classify against Available profiles list).
-- If the next token is ` + "`--dir`" + `, the token after it is the target working directory; consume both.
+- ` + "`--bg`" + ` (anywhere among the leading flags) selects bg mode: the delegate dispatches via ` + "`claude --bg`" + ` and shows up in Agent View. No live progress; the result is delivered on the user's NEXT prompt via the UserPromptSubmit hook. Consume the token.
+- ` + "`--dir <path>`" + ` (anywhere among the leading flags) is the target working directory; consume both tokens.
 - Everything remaining = task body.
 
 If profile or task is empty, ask the user with AskUserQuestion.
 
 # 2. Launch
 
-Call the Bash tool, synchronously. Include ` + "`--dir <path>`" + ` only when a directory was provided:
+Call the Bash tool, synchronously. Pass ` + "`--bg`" + ` and/or ` + "`--dir <path>`" + ` through to the script in the same order they appeared:
 
-  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--dir "<path>"] "<task body...>"
+  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--bg] [--dir "<path>"] "<task body...>"
 
-That script does all the bookkeeping (request file, tmux pane, env guards) and prints these lines to stdout:
+That script does all the bookkeeping (request file, dispatch, env guards). Output depends on mode.
+
+## tmux mode (default — no --bg flag)
 
   DELEGATE_ID=<id>
-  DELEGATE_WINDOW=delegate-<id>
   DELEGATE_RESULT=<path to result.md>
   DELEGATE_DIR=<delegate dir>
+  DELEGATE_WINDOW=delegate-<id>
   DELEGATE_JSONL=<path or empty>
 
-Read them out of the script's output and remember the id and the result path.
+Read them out of the script's output and remember the id and the result path. Continue with Step 3 (live watch).
 
-# 3. Stream progress (skip if DELEGATE_JSONL was empty)
+## bg mode (--bg flag)
+
+  DELEGATE_ID=<id>
+  DELEGATE_RESULT=<path to result.md>
+  DELEGATE_DIR=<delegate dir>
+  DELEGATE_BG_ID=<8-char Agent View session id>
+  DELEGATE_BG_NAME=<profile>:<truncated-task>
+
+The delegate is already running in the background. **Skip Step 3 entirely** — there is no live watcher subprocess to monitor. Tell the user in 1-2 short lines:
+
+  - which profile + task, and the Agent View id
+  - that the result will be delivered on their next prompt (or they can run ` + "`claude attach <DELEGATE_BG_ID>`" + ` to interact directly, or open ` + "`claude agents`" + ` for the full dashboard)
+
+Then go back to whatever the user was working on. Do NOT call delegate-watch.sh in bg mode.
+
+# 3. Stream progress (tmux mode only — skip in bg mode; skip if DELEGATE_JSONL was empty)
 
 Call the Bash tool a SECOND time with run_in_background=true:
 
