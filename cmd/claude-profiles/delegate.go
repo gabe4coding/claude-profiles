@@ -388,10 +388,29 @@ func cmdDelegateRunner(args []string) {
 	if _, err := os.Stat(mcpConfigPath); err != nil {
 		mcpConfigPath = loc.JSONPath
 	}
+
+	// Working dir the delegate's claude process starts in. Mirrors cmd.Dir set
+	// below; we resolve it now to compute the expected session directory.
+	workingDir := req.Dir
+	if workingDir == "" {
+		if cwd, cerr := os.Getwd(); cerr == nil {
+			workingDir = cwd
+		}
+	}
+
+	// Suppress claudeFlags' auto `--worktree` so we can pass an explicit name
+	// instead. With a deterministic worktree name we know exactly where Claude
+	// will write the session .jsonl, eliminating the "scan every project dir
+	// and guess" workaround that drove the old session-discovery code.
 	claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 	pcopy := *p
 	pcopy.Settings = nil
+	pcopy.Worktree = false
 	claudeArgs = append(claudeArgs, claudeFlags(&pcopy, settingsPath)...)
+	worktreeName := "delegate-" + delegateID
+	if p.Worktree {
+		claudeArgs = append(claudeArgs, "--worktree", worktreeName)
+	}
 	claudeArgs = append(claudeArgs, "--plugin-dir", wrapperPluginPath())
 	if pdir := pluginDirFor(*loc); pdir != "" {
 		claudeArgs = append(claudeArgs, "--plugin-dir", pdir)
@@ -422,7 +441,15 @@ func cmdDelegateRunner(args []string) {
 		claudeArgs = append(claudeArgs, "--", req.Task)
 	}
 
-	before := snapshotAllSessionFiles()
+	// Compute the directory under ~/.claude/projects/ where Claude will write
+	// this session's .jsonl. When the profile has Worktree=true we passed a
+	// deterministic --worktree name above, so the path is fully predictable:
+	// it's the encoded form of <repoRoot>/.claude/worktrees/<name>. When no
+	// worktree is requested, Claude writes under the encoded form of its CWD;
+	// resolve that via git rev-parse so we match Claude's own git-root logic.
+	expectedSessionsDir := computeExpectedSessionsDir(workingDir, p.Worktree, worktreeName)
+
+	before := snapshotJSONLInDir(expectedSessionsDir)
 	cmd := exec.Command(binary, claudeArgs[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -438,7 +465,7 @@ func cmdDelegateRunner(args []string) {
 	// jsonl-path.txt inside the delegate dir. The slash command in the parent
 	// session reads that file and hands the path to the main agent for live
 	// `tail -F` + Monitor streaming.
-	go announceDelegateJSONLPath(before, dir, req.Dir)
+	go announceDelegateJSONLPath(before, dir, expectedSessionsDir)
 
 	// As soon as the delegate finishes ITS FIRST TURN (claude emits a
 	// {"type":"system","subtype":"turn_duration"} event in the .jsonl), capture
@@ -454,9 +481,8 @@ func cmdDelegateRunner(args []string) {
 
 	// If the first-turn watcher (writeResultOnFirstTurnComplete) already wrote
 	// a result, keep it. Without this, the post-run fallback can OVERWRITE a
-	// good result with the error fallback below — e.g. when the session is in
-	// a directory the fallback's lookup can't reach (a worktree claude
-	// auto-created with a name unrelated to req.Dir).
+	// good result with the error fallback when the session produced no text
+	// reply yet at fallback time.
 	if _, err := os.Stat(resultPath); err == nil {
 		fmt.Fprintln(os.Stderr)
 		info("Delegate %s done — result written to %s/result.md", delegateID, dir)
@@ -464,16 +490,16 @@ func cmdDelegateRunner(args []string) {
 	}
 
 	// Otherwise, fall back to finding the session ourselves. Prefer the
-	// absolute path from jsonl-path.txt (announce goroutine already filtered
-	// genuinely-new files); fall back to scanning all project dirs. Using the
-	// path directly avoids extractLastAssistantMessage's sessionDirsToWatch
-	// lookup, which can't find sessions in worktree dirs unrelated to req.Dir.
+	// absolute path from jsonl-path.txt (announce goroutine writes it when the
+	// new .jsonl appears under expectedSessionsDir). If that's missing, do a
+	// final diff of the expected dir against the pre-launch snapshot — same
+	// principle as announce, just synchronous and one-shot.
 	var sessionFile string
 	if data, err := os.ReadFile(filepath.Join(dir, "jsonl-path.txt")); err == nil {
 		sessionFile = strings.TrimSpace(string(data))
 	}
 	if sessionFile == "" {
-		after := snapshotAllSessionFiles()
+		after := snapshotJSONLInDir(expectedSessionsDir)
 		var newestMtime int64
 		for path, mtime := range after {
 			if _, existed := before[path]; existed {
@@ -548,27 +574,23 @@ func writeDelegateResult(dir, body string) {
 	_ = os.WriteFile(filepath.Join(dir, "result.md"), []byte(body+resultReminder), 0o644)
 }
 
-// announceDelegateJSONLPath polls the project sessions dir until a brand-new
+// announceDelegateJSONLPath polls the expected sessions dir until a brand-new
 // .jsonl appears (or 30s elapse), then writes its absolute path to
 // <delegateDir>/jsonl-path.txt for the parent slash command to read.
 //
 // We deliberately only accept GENUINELY NEW files (paths that weren't in the
 // pre-launch snapshot). The shared findNewOrUpdatedSession helper also
 // returns mtime-updated files, which is wrong here: the parent's session
-// .jsonl is in the same dir and is being actively appended to, so it would
-// win the race and we'd point the watcher at the parent's events instead of
-// the delegate's. That bug shipped — symptom: watcher emits parent's
-// activity, or nothing at all when parent is idle.
-func announceDelegateJSONLPath(before map[string]int64, delegateDir, targetDir string) {
-	// snapshotAllSessionFiles keys by ABSOLUTE path, so we don't need to
-	// rejoin anything — the key is already the path the watcher should tail.
-	// We scan ALL project dirs (not just the target dir) because Claude may
-	// resolve a different effective CWD than cmd.Dir — e.g. git root or a
-	// worktree root — making the exact subdir hard to predict.
+// .jsonl can live in the same dir and would otherwise win the race.
+//
+// expectedSessionsDir is computed from the delegate's working dir + worktree
+// name (see computeExpectedSessionsDir). With a deterministic --worktree name
+// passed to claude, this is the ONLY dir the session can land in.
+func announceDelegateJSONLPath(before map[string]int64, delegateDir, expectedSessionsDir string) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
-		now := snapshotAllSessionFiles()
+		now := snapshotJSONLInDir(expectedSessionsDir)
 		for absPath := range now {
 			if _, existed := before[absPath]; existed {
 				continue
@@ -577,6 +599,50 @@ func announceDelegateJSONLPath(before map[string]int64, delegateDir, targetDir s
 			return
 		}
 	}
+}
+
+// snapshotJSONLInDir records mtimes of every .jsonl in dir. Missing dir
+// returns an empty map — the watcher will pick up files when the dir is
+// created. Used by the delegate runner to track only the directory where
+// Claude will write the session, instead of scanning all project dirs.
+func snapshotJSONLInDir(dir string) map[string]int64 {
+	out := map[string]int64{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		out[filepath.Join(dir, e.Name())] = info.ModTime().UnixNano()
+	}
+	return out
+}
+
+// computeExpectedSessionsDir returns the absolute path of the
+// ~/.claude/projects/ subdir where Claude will write the delegate's session
+// .jsonl. When p.Worktree is true Claude creates the worktree under
+// <repoRoot>/.claude/worktrees/<worktreeName>/, so the encoded path is fully
+// predictable. Without --worktree, Claude resolves its project dir from the
+// git toplevel of its cwd; if git isn't available we fall back to workingDir.
+func computeExpectedSessionsDir(workingDir string, useWorktree bool, worktreeName string) string {
+	repoRoot := workingDir
+	if workingDir != "" {
+		gitCmd := exec.Command("git", "rev-parse", "--show-toplevel")
+		gitCmd.Dir = workingDir
+		if out, err := gitCmd.Output(); err == nil {
+			repoRoot = mainRepoRoot(strings.TrimSpace(string(out)))
+		}
+	}
+	if useWorktree {
+		return encodedSessionsDir(filepath.Join(repoRoot, ".claude", "worktrees", worktreeName))
+	}
+	return encodedSessionsDir(repoRoot)
 }
 
 // writeResultOnFirstTurnComplete watches the delegate's .jsonl for the first
@@ -674,25 +740,6 @@ func jsonlHasTurnDuration(path string) bool {
 		}
 	}
 	return false
-}
-
-// extractLastAssistantMessage is the post-run() fallback used by cmdDelegate
-// Runner after cmd.Run() returns. The watcher above handles the common case
-// (delegate stays alive in tmux); this still runs in case claude actually
-// exited and result.md hasn't been written yet. Scans every dir that could
-// hold the session (main + worktree subdirs) so worktree-launched delegates
-// still resolve correctly.
-func extractLastAssistantMessage(sessionID, root string) string {
-	if sessionID == "" {
-		return ""
-	}
-	for _, dir := range sessionDirsToWatch(root) {
-		path := filepath.Join(dir, sessionID+".jsonl")
-		if _, err := os.Stat(path); err == nil {
-			return extractLastAssistantFromFile(path)
-		}
-	}
-	return ""
 }
 
 // extractLastAssistantFromFile is the underlying scanner used by both the

@@ -462,38 +462,6 @@ func projectSessionsDir() string {
 	return encodedSessionsDir(cwd)
 }
 
-// snapshotAllSessionFiles records mtimes of every .jsonl in ALL
-// ~/.claude/projects/ subdirs. Used by the delegate runner to find a new
-// session regardless of which project directory Claude chooses — Claude may
-// resolve a different effective CWD than cmd.Dir (e.g. git root, worktree
-// root) so predicting the exact subdir is unreliable.
-func snapshotAllSessionFiles() map[string]int64 {
-	projectsRoot := filepath.Join(claudeRootDirPath(), "projects")
-	entries, err := os.ReadDir(projectsRoot)
-	if err != nil {
-		return map[string]int64{}
-	}
-	out := map[string]int64{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		dir := filepath.Join(projectsRoot, e.Name())
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, f := range files {
-			if !strings.HasSuffix(f.Name(), ".jsonl") {
-				continue
-			}
-			info, _ := f.Info()
-			out[filepath.Join(dir, f.Name())] = info.ModTime().UnixNano()
-		}
-	}
-	return out
-}
-
 // encodedSessionsDir returns ~/.claude/projects/<encoded-cwd> where
 // <encoded-cwd> is the absolute cwd with BOTH "/" and "." replaced by "-" —
 // matching Claude Code's on-disk encoding. The dot replacement is the
