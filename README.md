@@ -2,7 +2,7 @@
 
 **Switch Claude's MCP servers, model, permission mode, hooks, and prompts in one keystroke — without restarting your session.**
 
-`claude` is one binary, but the way you want to use it changes by the hour: a tight allow-list while editing prod code, a wide-open agent loop while prototyping, a Jira+GitHub MCP combo when triaging, a clean isolated config when reviewing a teammate's plugin. claude-profiles lets you bundle each of those into a named **profile** and pick the right one at launch — or swap mid-conversation with `/switch` and keep your context.
+`claude` is one binary, but the way you want to use it changes by the hour: a tight allow-list while editing prod code, a wide-open agent loop while prototyping, a Jira+GitHub MCP combo when triaging, a clean isolated config when reviewing a teammate's plugin. claude-profiles lets you bundle each of those into a named **profile** and pick the right one at launch — or hand off mid-conversation with `/handoff` and keep your context.
 
 Think `nvm use`, but for everything around `claude`.
 
@@ -10,8 +10,10 @@ Think `nvm use`, but for everything around `claude`.
 
 ## What makes it different
 
-**1. `/switch` mid-conversation — change the toolbox without losing the thread.**
-Type `/switch release-notes` inside any session and claude resumes the *same* conversation under a different profile: different model, different MCP servers, different permission mode. Start in "explore" mode, harden into "ship" mode without re-explaining context.
+**1. `/handoff` mid-conversation — change the toolbox without losing the thread.**
+Type `/handoff release-notes` inside any session and claude swaps to a different profile: different model, different MCP servers, different permission mode. Two modes:
+- `keep` — resume the same conversation under the new profile (e.g. start in "explore" mode, harden into "ship" mode without re-explaining context).
+- `fresh` — claude writes a 5-10 bullet brief of where you were, kills the session, and the next profile starts clean with that brief as its opening prompt.
 
 **2. `ask` — fuzzy launch by intent, not by name.**
 ```bash
@@ -129,7 +131,7 @@ claude-profiles show dev-toolkit
 ```bash
 claude-profiles                 # hub
 claude-profiles <name>          # launch (shorthand for `run`)
-claude-profiles run <name>      # launch with the wrapper loop (enables /switch)
+claude-profiles run <name>      # launch with the wrapper loop (enables /handoff)
 claude-profiles exec <name> …   # replace this process with claude (CI / scripts)
 claude-profiles ask "<prompt>"  # classify the prompt → best profile → launch it
 claude-profiles list            # list all profiles (local + project + repos)
@@ -145,14 +147,15 @@ claude-profiles doctor          # environment + config sanity checks
 claude-profiles analytics       # context-window usage, cache stats, recommendations
 ```
 
-### Switching profiles **inside** a session
+### Handing off to another profile **inside** a session
 
 `claude-profiles run` (and the hub launch) wrap claude in a small loop. Inside the session you can type:
 
-- `/switch <name>` — swap to another profile and `--resume` the current conversation under it
-- `/switch` — open the picker
+- `/handoff <name>` — swap to another profile mid-conversation. Defaults to `keep` mode (resume the same conversation under the new profile).
+- `/handoff <name> fresh` — claude writes a 5-10 bullet brief of the session, kills it, and the next profile starts clean with that brief as its opening prompt.
+- `/handoff` — open the picker.
 
-This is the killer feature: change MCP servers, model, or permission mode mid-conversation without losing context.
+This is the killer feature: change MCP servers, model, or permission mode mid-conversation without losing context (or with a deliberate reset, when you want one).
 
 ---
 
