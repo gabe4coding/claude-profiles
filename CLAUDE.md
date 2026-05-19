@@ -10,6 +10,10 @@ Remote install (repo is private — `GOPRIVATE` required):
 GOPRIVATE=github.com/gabe4coding/claude-profiles go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
 ```
 
+## Development workflow
+
+Every change ships with a working smoke test. If the affected surface has no test harness, add (or extend) a runnable script under `scripts/` — e.g. `./scripts/smoke-distill.sh` covers the Stop-hook distill filters. The script must be re-runnable from a clean checkout, exit non-zero on regression, and clean up its temp state. If a meaningful smoke test would require disproportionate setup (sandboxed network, real Claude session, manual user interaction), tell the user explicitly rather than skipping verification.
+
 ## Non-obvious invariants
 
 **Profile prefs keys are main-repo absolute paths.**
