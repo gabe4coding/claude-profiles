@@ -21,7 +21,7 @@ import (
 //     asks.json                        ask-prompt history
 //     run/                             pidfiles of running foreground wrappers
 //     run-settings.json                last SessionStart-hook augmented settings
-//     next-marker                      transient /switch handoff token
+//     next-marker                      transient /handoff token
 //
 // Overridable via CLAUDE_PROFILES_ROOT (rarely needed; mostly for tests).
 
@@ -49,7 +49,7 @@ func runDirPath() string       { return filepath.Join(profilesRoot(), "run") }
 func runSettingsPath() string  { return filepath.Join(profilesRoot(), "run-settings.json") }
 // wrapperPluginPath is the on-disk path of the wrapper-owned plugin dir.
 // Folder name is "claude-profiles" so that the slash command shows up as
-// `/switch` (or namespaced `/claude-profiles:switch` if the user prefers).
+// `/handoff` (or namespaced `/claude-profiles:handoff` if the user prefers).
 func wrapperPluginPath() string { return filepath.Join(profilesRoot(), "claude-profiles") }
 func delegatesDir() string      { return filepath.Join(profilesRoot(), "delegates") }
 func sessionsLedgerPath() string { return filepath.Join(profilesRoot(), "sessions.json") }
