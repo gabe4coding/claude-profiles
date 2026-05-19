@@ -41,6 +41,7 @@ const (
 	actRepo      hubAction = "repo"
 	actPin       hubAction = "pin"
 	actAnalytics hubAction = "analytics"
+	actAgentView hubAction = "agent-view"
 	actQuit      hubAction = "quit"
 )
 
@@ -490,6 +491,9 @@ func (m hubModel) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.result = hubResult{action: actAnalytics}
 		return m, tea.Quit
+	case "a":
+		m.result = hubResult{action: actAgentView}
+		return m, tea.Quit
 	case "p":
 		if it := m.selectedID(); it != "" {
 			m.result = hubResult{action: actPin, profile: it}
@@ -797,6 +801,7 @@ func (m hubModel) paletteContent() string {
 		{"H", "toggle Disabled section"},
 		{"r", "manage repos"},
 		{"s", "analytics"},
+		{"a", "open Agent View (claude agents)"},
 	}
 	var lines []string
 	lines = append(lines, header, "")
