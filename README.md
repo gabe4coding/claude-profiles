@@ -1,8 +1,45 @@
 # claude-profiles
 
-A wrapper around the `claude` CLI that lets you keep named **profiles** — each one a bundle of MCP servers, allowed/denied tools, model + permission settings, hooks, plugins, and pinned prompts — and launch Claude with the right bundle for the task at hand.
+**Switch Claude's MCP servers, model, permission mode, hooks, and prompts in one keystroke — without restarting your session.**
 
-Think `nvm use` but for your Claude sessions.
+`claude` is one binary, but the way you want to use it changes by the hour: a tight allow-list while editing prod code, a wide-open agent loop while prototyping, a Jira+GitHub MCP combo when triaging, a clean isolated config when reviewing a teammate's plugin. claude-profiles lets you bundle each of those into a named **profile** and pick the right one at launch — or hand off mid-conversation with `/handoff` and keep your context.
+
+Think `nvm use`, but for everything around `claude`.
+
+---
+
+## What makes it different
+
+**1. `/handoff` mid-conversation — change the toolbox without losing the thread.**
+Type `/handoff release-notes` inside any session and claude swaps to a different profile: different model, different MCP servers, different permission mode. Claude asks how to carry context across (or you can skip the prompt with a flag):
+- `--keep` — resume the same conversation under the new profile (e.g. start in "explore" mode, harden into "ship" mode without re-explaining context).
+- `--fresh` — claude writes a 5-10 bullet brief of where you were, kills the session, and the next profile starts clean with that brief as its opening prompt.
+
+**2. `ask` — fuzzy launch by intent, not by name.**
+```bash
+claude-profiles ask "diagnose this RabbitMQ binding"
+```
+Classifies the prompt against every profile you have, picks the best match, launches it with the prompt pre-filled. Drops the "which profile was this again?" tax.
+
+**3. Profiles as a shared git repo — your team's setup in one command.**
+```bash
+claude-profiles repo add git@github.com:acme/claude-profiles.git --alias acme
+claude-profiles acme/release-notes
+```
+Auto-syncs every 5 min. `copy` a teammate's profile to fork it locally — the original stays read-only. Or commit a project-scoped profile at `<repo>/.claude-profiles/<name>/` and it auto-appears for anyone running `claude-profiles` in that checkout.
+
+**4. `/delegate` — fan out work to a sub-agent without losing the parent session.**
+From inside any session, hand a task to another profile in a new tmux window. The delegate runs under its own profile (different model, different MCP, different permissions); when it finishes, its last reply gets injected back into the parent context. Multi-agent built in — no orchestrator to wire up.
+
+Plus: per-launch git **worktrees** (parallel agents without stepping on each other), **isolated** mode (clean `~/.claude` for safe testing), `/bg` to background a session and recover it from the hub later, `/generate` to scaffold a new profile interactively (with WebFetch-based MCP server discovery), a session **distill** hook, **analytics** on context-window burn and cache hit rate, and a TUI **hub** where pin / edit / copy / export are single keystrokes.
+
+---
+
+## Who this is for
+
+- **Solo developer juggling multiple stacks** — one profile per `(repo, mode)` combo, `cwd` pins each to the right directory, the hub becomes your launcher.
+- **Teams that want reproducible Claude setup** — commit profiles to a shared git repo or directly into `.claude-profiles/` in the project. Onboarding becomes `repo add`.
+- **MCP power-users** — per-profile MCP servers with per-server allow/deny lists, `probe` for raw error messages when a server breaks, `analytics` to spot which servers are inflating your context.
 
 ---
 
@@ -97,7 +134,7 @@ claude-profiles show dev-toolkit
 ```bash
 claude-profiles                 # hub
 claude-profiles <name>          # launch (shorthand for `run`)
-claude-profiles run <name>      # launch with the wrapper loop (enables /switch)
+claude-profiles run <name>      # launch with the wrapper loop (enables /handoff)
 claude-profiles exec <name> …   # replace this process with claude (CI / scripts)
 claude-profiles ask "<prompt>"  # classify the prompt → best profile → launch it
 claude-profiles list            # list all profiles (local + project + repos)
@@ -113,14 +150,16 @@ claude-profiles doctor          # environment + config sanity checks
 claude-profiles analytics       # context-window usage, cache stats, recommendations
 ```
 
-### Switching profiles **inside** a session
+### Handing off to another profile **inside** a session
 
 `claude-profiles run` (and the hub launch) wrap claude in a small loop. Inside the session you can type:
 
-- `/switch <name>` — swap to another profile and `--resume` the current conversation under it
-- `/switch` — open the picker
+- `/handoff <name>` — hand off to another profile mid-conversation. Claude asks whether to keep the current conversation or start fresh.
+- `/handoff <name> --keep` — resume the same conversation under the new profile, no prompt.
+- `/handoff <name> --fresh` — claude writes a 5-10 bullet brief of the session, kills it, and the next profile starts clean with that brief as its opening prompt.
+- `/handoff` — open the picker.
 
-This is the killer feature: change MCP servers, model, or permission mode mid-conversation without losing context.
+This is the killer feature: change MCP servers, model, or permission mode mid-conversation without losing context (or with a deliberate reset, when you want one).
 
 ---
 

@@ -23,12 +23,12 @@ import (
 // it relaunches claude with the new profile and --resume on the same session,
 // so the conversation continues seamlessly.
 //
-// The marker is set by a `/switch <name>` slash command, which the loop
-// installs into ~/.claude/commands/switch.md on first run. The command also
+// The marker is set by a `/handoff <name>` slash command, which the loop
+// installs into the wrapper plugin's commands dir on first run. The command also
 // kills the running claude (SIGTERM to its parent), so the user doesn't need
 // to type /exit themselves.
 
-const switchSlashCommand = `---
+const handoffSlashCommand = `---
 description: Hand off to another claude-profiles profile. Pass a profile id or describe an intent in plain English; the agent will pick the best-fit profile and ask whether to start with fresh context or resume this conversation.
 argument-hint: [profile-id | intent] [--fresh | --keep]
 allowed-tools: AskUserQuestion, Bash
@@ -129,8 +129,8 @@ func cmdRun(args []string) {
 	}
 	passThrough := args
 
-	if err := ensureSwitchSlashCommand(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not install /switch slash command: %v\n", err)
+	if err := ensureHandoffSlashCommand(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not install /handoff slash command: %v\n", err)
 	}
 	if err := ensureWrapperPluginHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install wrapper-plugin hooks: %v\n", err)
@@ -164,8 +164,8 @@ func cmdRun(args []string) {
 	resumeID := initialResumeID
 	// On a wrapper-attach (CLI/hub supplied --resume), the first iteration
 	// should just open claude --resume <id> interactively, not auto-continue
-	// the conversation as we do after /switch. Flip false after the first
-	// iteration so subsequent /switch relaunches still auto-continue.
+	// the conversation as we do after /handoff. Flip false after the first
+	// iteration so subsequent /handoff relaunches still auto-continue.
 	skipAutoContinue := initialResumeID != ""
 	firstIteration := true
 	for {
@@ -227,9 +227,9 @@ func cmdRun(args []string) {
 		}
 		claudeArgs := []string{"claude", "--strict-mcp-config", "--mcp-config", mcpConfigPath}
 		claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
-		// Always load the wrapper-plugin so /switch survives --setting-sources=
+		// Always load the wrapper-plugin so /handoff survives --setting-sources=
 		// in isolated mode. The plugin is a tiny dir containing commands/
-		// switch.md — claude's --plugin-dir auto-discovery loads it without
+		// handoff.md — claude's --plugin-dir auto-discovery loads it without
 		// touching user/project settings.
 		claudeArgs = append(claudeArgs, "--plugin-dir", wrapperPluginPath())
 		// If the profile folder bundles commands/skills/agents/hooks, load it
@@ -245,14 +245,14 @@ func cmdRun(args []string) {
 			// On wrapper-attach to a /bg'd session, claude refuses plain
 			// --resume because the supervisor still owns the session id. Fork
 			// off a copy. We only do this on the first iteration of attach;
-			// subsequent /switch relaunches target our own forked id, which
+			// subsequent /handoff relaunches target our own forked id, which
 			// plain --resume handles fine.
 			if skipAutoContinue {
 				claudeArgs = append(claudeArgs, "--fork-session")
 			}
 		}
 		// First launch: pass through caller-supplied trailing args (e.g. an
-		// initial prompt). On relaunches after a /switch we instead inject a
+		// initial prompt). On relaunches after a /handoff we instead inject a
 		// short "continue" message — claude treats trailing args after --resume
 		// as the next user message, so the agent picks up the task itself
 		// without the user having to type anything.
@@ -553,7 +553,7 @@ func consumeNextProfileMarker() (HandoffMarker, bool) {
 	return HandoffMarker{Profile: raw}, true
 }
 
-// ensureSwitchSlashCommand installs handoff.md into the wrapper-plugin dir at
+// ensureHandoffSlashCommand installs handoff.md into the wrapper-plugin dir at
 // ~/.claude-profiles/claude-profiles/commands/handoff.md. The wrapper passes
 // --plugin-dir <wrapper-plugin> on every launch, so /handoff is available
 // regardless of isolated mode (which strips user/project settings.json and
@@ -562,13 +562,13 @@ func consumeNextProfileMarker() (HandoffMarker, bool) {
 // Idempotent — only rewrites when the embedded text drifts. Also cleans up
 // the old switch.md / ~/.claude/commands/switch.md leftovers so /help only
 // shows one entry.
-func ensureSwitchSlashCommand() error {
+func ensureHandoffSlashCommand() error {
 	dir := filepath.Join(wrapperPluginPath(), "commands")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	commands := []struct{ name, body string }{
-		{"handoff.md", switchSlashCommand},
+		{"handoff.md", handoffSlashCommand},
 		{"generate.md", generateSlashCommand},
 	}
 	if tmuxAvailable() {
@@ -910,9 +910,9 @@ func shellQuote(s string) string {
 //
 // Claude Code's SessionStart hook can inject text into a fresh session's
 // context via `hookSpecificOutput.additionalContext`. We use that to brief
-// the agent on which profiles exist (so /switch can take free-form intent
+// the agent on which profiles exist (so /handoff can take free-form intent
 // and the agent can classify) and on the exact bash command to write the
-// marker file when the user requests a switch.
+// marker file when the user requests a handoff.
 
 const sessionStartHookHeader = `# claude-profiles: in-session profile handoff
 

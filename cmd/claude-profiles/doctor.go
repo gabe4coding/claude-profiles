@@ -12,7 +12,7 @@ import (
 )
 
 // cmdDoctor prints a one-shot health report — meant to be the first thing the
-// user runs when /switch, the hook, or a launch starts misbehaving. Each row
+// user runs when /handoff, the hook, or a launch starts misbehaving. Each row
 // is one independent check; an overall exit code of 1 means at least one FAIL.
 
 type docCheck struct {
@@ -98,7 +98,7 @@ func checkClaudeBinary() docCheck {
 
 // checkClaudeProfilesPath confirms `claude-profiles` resolves on PATH — the
 // SessionStart hook embeds that bare name, so a missing entry breaks the
-// free-form /switch flow.
+// free-form /handoff flow.
 func checkClaudeProfilesPath() docCheck {
 	path, err := exec.LookPath("claude-profiles")
 	if err != nil {
@@ -142,7 +142,7 @@ func checkSwitchCommand() docCheck {
 	if err != nil {
 		return docCheck{"/handoff slash command", "warn", "not installed yet — first run of any launch will install it"}
 	}
-	if string(data) != switchSlashCommand {
+	if string(data) != handoffSlashCommand {
 		return docCheck{"/handoff slash command", "warn", "out of date; will be rewritten on next launch"}
 	}
 	return docCheck{"/handoff slash command", "ok", path}

@@ -146,7 +146,7 @@ type Profile struct {
 	// claude loads NO user/project/local settings.json — only the profile's
 	// inline _settings (plus our SessionStart hook) are in effect. Plugins,
 	// slash commands, agents, and CLAUDE.md from the host are NOT affected by
-	// this flag — those require --bare, which would break /switch. Default
+	// this flag — those require --bare, which would break /handoff. Default
 	// is false (profile blends with the user's root configuration as before).
 	Isolated bool `json:"_isolated,omitempty"`
 	// Worktree (when true) passes --worktree to claude so each session starts in
