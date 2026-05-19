@@ -1221,8 +1221,8 @@ Commands:
   new                Create a new profile interactively
   ask [prompt]       Classify a prompt to the best profile and launch it
   run <profile>      Launch claude in a wrapper loop. Inside the session,
-                       /handoff <name> [keep|fresh] hands off to another
-                       profile; bare /handoff opens the profile picker.
+                       /handoff <name> [--keep|--fresh] hands off to
+                       another profile; bare /handoff opens the picker.
   exec <profile>     Replace this process with claude, applying the profile's
    [claude-args...]    flags. No wrapper loop, tmux, hooks, or pidfiles —
                        suited to CI and other non-interactive automation.

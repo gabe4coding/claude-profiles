@@ -11,9 +11,9 @@ Think `nvm use`, but for everything around `claude`.
 ## What makes it different
 
 **1. `/handoff` mid-conversation — change the toolbox without losing the thread.**
-Type `/handoff release-notes` inside any session and claude swaps to a different profile: different model, different MCP servers, different permission mode. Two modes:
-- `keep` — resume the same conversation under the new profile (e.g. start in "explore" mode, harden into "ship" mode without re-explaining context).
-- `fresh` — claude writes a 5-10 bullet brief of where you were, kills the session, and the next profile starts clean with that brief as its opening prompt.
+Type `/handoff release-notes` inside any session and claude swaps to a different profile: different model, different MCP servers, different permission mode. Claude asks how to carry context across (or you can skip the prompt with a flag):
+- `--keep` — resume the same conversation under the new profile (e.g. start in "explore" mode, harden into "ship" mode without re-explaining context).
+- `--fresh` — claude writes a 5-10 bullet brief of where you were, kills the session, and the next profile starts clean with that brief as its opening prompt.
 
 **2. `ask` — fuzzy launch by intent, not by name.**
 ```bash
@@ -154,8 +154,9 @@ claude-profiles analytics       # context-window usage, cache stats, recommendat
 
 `claude-profiles run` (and the hub launch) wrap claude in a small loop. Inside the session you can type:
 
-- `/handoff <name>` — swap to another profile mid-conversation. Defaults to `keep` mode (resume the same conversation under the new profile).
-- `/handoff <name> fresh` — claude writes a 5-10 bullet brief of the session, kills it, and the next profile starts clean with that brief as its opening prompt.
+- `/handoff <name>` — hand off to another profile mid-conversation. Claude asks whether to keep the current conversation or start fresh.
+- `/handoff <name> --keep` — resume the same conversation under the new profile, no prompt.
+- `/handoff <name> --fresh` — claude writes a 5-10 bullet brief of the session, kills it, and the next profile starts clean with that brief as its opening prompt.
 - `/handoff` — open the picker.
 
 This is the killer feature: change MCP servers, model, or permission mode mid-conversation without losing context (or with a deliberate reset, when you want one).
