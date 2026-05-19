@@ -1,8 +1,40 @@
 # claude-profiles
 
-A wrapper around the `claude` CLI that lets you keep named **profiles** — each one a bundle of MCP servers, allowed/denied tools, model + permission settings, hooks, plugins, and pinned prompts — and launch Claude with the right bundle for the task at hand.
+**Switch Claude's MCP servers, model, permission mode, hooks, and prompts in one keystroke — without restarting your session.**
 
-Think `nvm use` but for your Claude sessions.
+`claude` is one binary, but the way you want to use it changes by the hour: a tight allow-list while editing prod code, a wide-open agent loop while prototyping, a Jira+GitHub MCP combo when triaging, a clean isolated config when reviewing a teammate's plugin. claude-profiles lets you bundle each of those into a named **profile** and pick the right one at launch — or swap mid-conversation with `/switch` and keep your context.
+
+Think `nvm use`, but for everything around `claude`.
+
+---
+
+## What makes it different
+
+**1. `/switch` mid-conversation — change the toolbox without losing the thread.**
+Type `/switch release-notes` inside any session and claude resumes the *same* conversation under a different profile: different model, different MCP servers, different permission mode. Start in "explore" mode, harden into "ship" mode without re-explaining context.
+
+**2. `ask` — fuzzy launch by intent, not by name.**
+```bash
+claude-profiles ask "diagnose this RabbitMQ binding"
+```
+Classifies the prompt against every profile you have, picks the best match, launches it with the prompt pre-filled. Drops the "which profile was this again?" tax.
+
+**3. Profiles as a shared git repo — your team's setup in one command.**
+```bash
+claude-profiles repo add git@github.com:acme/claude-profiles.git --alias acme
+claude-profiles acme/release-notes
+```
+Auto-syncs every 5 min. `copy` a teammate's profile to fork it locally — the original stays read-only. Or commit a project-scoped profile at `<repo>/.claude-profiles/<name>/` and it auto-appears for anyone running `claude-profiles` in that checkout.
+
+Plus: per-launch git **worktrees** (parallel agents without stepping on each other), **isolated** mode (clean `~/.claude` for safe testing), a session **distill** hook, **analytics** on context-window burn and cache hit rate, and a TUI **hub** where pin / edit / copy / export are single keystrokes.
+
+---
+
+## Who this is for
+
+- **Solo developer juggling multiple stacks** — one profile per `(repo, mode)` combo, `cwd` pins each to the right directory, the hub becomes your launcher.
+- **Teams that want reproducible Claude setup** — commit profiles to a shared git repo or directly into `.claude-profiles/` in the project. Onboarding becomes `repo add`.
+- **MCP power-users** — per-profile MCP servers with per-server allow/deny lists, `probe` for raw error messages when a server breaks, `analytics` to spot which servers are inflating your context.
 
 ---
 
