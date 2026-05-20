@@ -152,11 +152,53 @@ Step 2 needs the runner to capture the spawned subprocess PID — currently `cmd
 
 Pick (b) for the first implementation; revisit (a) if false matches show up in practice.
 
-### Step 4 (optional, lower priority) — Hub annotation
+### Step 4 — Hub annotation (design locked 2026-05-20)
 
-In `listAllLocations()` (hub.go), call `claudeAgentsJSON()` once and annotate each profile's `ProfileLocation` with the count of live sessions whose `cwd` matches the profile's cwd. Display in the hub list as `[2 active]` or similar.
+Surfaces live `busy`/`idle` status from `claude agents --json` for the bg sessions already tracked by the hub via `bgMap` (from `~/.claude/daemon/roster.json`). **Augments** the existing data; does NOT replace `bgMap` (which carries Profile + Hint binding that `agents --json` lacks).
 
-This replaces any ad-hoc tmux/process scanning the hub currently does (if any).
+#### Locked decisions
+
+| Aspect | Decision | Rationale |
+|---|---|---|
+| Scope | Bg only | Interactive sessions are visible via tmux/terminal already; bg are the ones whose status the user can't otherwise see. Cross-reference `bgMap` to filter `agents --json` output. |
+| Granularity | 2 states: `busy`, `idle` | Spares the per-session `state.json` read. "Done but not stopped" zombies still show as `idle` here; the user can clean them via `claude stop` once they ground-truth. |
+| Refresh | `tea.Tick` every 3s | Live transitions visible while the hub is open; subprocess cost bounded by typical hub-open duration. |
+| Display | Text suffix on the profile row: `(2 busy)`, `(1 busy · 1 idle)`, `(1 idle)`. Hidden when zero bg sessions for the profile. | Informational, readable, no special chars / color dependency, additive to the existing `hubTitle` format. |
+| Fallback | If `claude agents --json` errors (older Claude Code, daemon down), no annotation is added. Existing hub rendering is unchanged. | Graceful degradation — never regress current behaviour. |
+
+#### Data flow
+
+1. At hub launch (and every 3s thereafter), call `claudeAgentsJSON()`.
+2. Build `agentsByID map[string]string` (sessionId → `status`) from the result.
+3. For each profile, iterate its `bgMap[QualifiedID]` entries; look up each `SessionID` in `agentsByID`; tally busy/idle.
+4. Pass the per-profile counts into `hubTitle()` for suffix rendering.
+5. Sessions in `bgMap` that don't appear in `agentsByID` (process gone but roster.json stale) are excluded from the count — neither busy nor idle.
+
+#### Helper to add
+
+```go
+// BgStatusCounts is the per-profile rollup of live bg session status,
+// derived from claude agents --json. Sessions present in bgMap but
+// missing from the agents output are excluded — those are roster.json
+// entries for already-stopped daemons.
+type BgStatusCounts struct {
+    Busy int
+    Idle int
+}
+
+func bgStatusCounts(bg []BackgroundedSession, agentsByID map[string]string) BgStatusCounts {
+    var c BgStatusCounts
+    for _, s := range bg {
+        switch agentsByID[s.SessionID] {
+        case "busy":
+            c.Busy++
+        case "idle":
+            c.Idle++
+        }
+    }
+    return c
+}
+```
 
 ---
 
@@ -169,7 +211,7 @@ HANDOFF.md Atto III plans to:
 
 Issue #9's changes are **Atto II.5** — a resilience improvement to the current tmux path that doesn't change the integration contract. The `claudeAgentsJSON()` helper and `agentLister` interface introduced here are reusable in Atto III for hub annotation and session status queries.
 
-**Do not implement Step 2/3 changes if Atto II (default flip) is imminent** — the tmux path is slated for deletion anyway. Focus on Step 1 (the helper) and Step 4 (hub annotation) as standalone value.
+**Do not implement Step 2/3 changes if Atto II (default flip) is imminent** — the tmux path is slated for deletion anyway. Focus on Step 1 (the helper, already shipped in PR #14) and Step 4 (hub annotation, design locked in PR #14) as standalone value.
 
 ---
 
@@ -182,7 +224,7 @@ Schema verification is **complete** (see "Verified schema" above; runs captured 
 3. Update `announceDelegateJSONLPath` to use agents JSON for early-fail / disambiguation (Step 2). Keep filesystem scan as primary discovery for the tmux path.
 4. Update `cmdDelegateRunner` post-run fallback (Step 3) with cwd+startedAt window matching.
 5. Build, run `./scripts/smoke-distill.sh`, `./scripts/smoke-delegate-bg.sh`, `./scripts/smoke-ui.sh`.
-6. Hub annotation (Step 4) can ship as a follow-on commit.
+6. Hub annotation (Step 4): per "Locked decisions" above. Add `bgStatusCounts()` to `session_discovery.go`, wire `agentsByID` into `hubModel`, drive refresh via `tea.Tick`, extend `hubTitle()` for the suffix. Ships as a follow-on PR.
 
 ---
 
