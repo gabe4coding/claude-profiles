@@ -357,11 +357,13 @@ func readBgJobState(path string) (bgJobState, error) {
 // for us to treat the delegate's reply as ready. The supervisor's state
 // machine transitions to "blocked" after the first turn ends (waiting for
 // the next user prompt — which a delegate doesn't get), to "completed"
-// when /stop runs, to "failed" on error, and to "stopped" when
-// `claude stop <id>` runs. Any of these means we can extract.
+// when /stop runs, to "failed" on error, to "stopped" when
+// `claude stop <id>` runs, and to "done" on Claude Code 2.1.145+ when
+// a bg job reaches a terminal state with a successful result. Any of
+// these means we can extract.
 func isBgFirstTurnDone(s bgJobState) bool {
 	switch s.State {
-	case "blocked", "completed", "failed", "stopped":
+	case "blocked", "completed", "failed", "stopped", "done":
 		return s.LinkScanPath != "" || s.State != "blocked"
 	}
 	return false
