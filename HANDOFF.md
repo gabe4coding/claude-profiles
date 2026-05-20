@@ -58,7 +58,41 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 - Settings file for `--bg` lives at `<delegate-dir>/settings.json` (NOT `os.TempDir`). Cleanup is tied to the delegate dir lifecycle.
 - The `--bg` path does NOT pass `--worktree`: Claude Code's bg machinery auto-creates one under `.claude/worktrees/` with cleanup tied to `claude rm`. For profiles with `Worktree:true`, this is a behaviour change confined to the `--bg` path (no deterministic `delegate-<id>` name).
 
+## Pending enhancement specs (triaged 2026-05-20)
+
+Two open issues were validated against the codebase and are queued as specced enhancements. Tracking: [PR #11](https://github.com/gabe4coding/claude-profiles/pull/11).
+
+### Issue #7 — Stop hook: `background_tasks` / `session_crons` fields
+Spec: `docs/spec-issue-7-stop-hook-background-fields.md`
+
+- Extend `cmdHookStop()` input struct to parse the two new v2.1.145 fields.
+- Add early exits (before bookmark advancement) when bg delegates are in flight or the turn is cron-triggered.
+- Extend `scripts/smoke-distill.sh` with two synthetic-payload test cases.
+
+**Effort**: small (< 20 lines of Go + 2 smoke cases). Safe to pick up independently of the Atto migration.
+
+### Issue #9 — Session discovery via `claude agents --json`
+Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20 against live interactive + `--bg` sessions)
+
+- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`. Schema is camelCase (`sessionId`, `cwd`, `startedAt`, `pid`, `kind`, `status`, `name`). `name` is only present on `kind:"background"` rows; the JSONL path is not in the agents output at all (read `linkScanPath` from `~/.claude/jobs/<daemonShort>/state.json`).
+- For the tmux path (`cmdDelegateRunner`), agents-JSON is **early-fail + disambiguation**, not a primary replacement for the filesystem scan — interactive rows have no `name` so matching is by `cwd`+`startedAt` window.
+- Hub annotation by `cwd` (optional follow-on).
+
+**Effort**: medium. The helper is standalone; integration with the delegate runner is the complex part. **Coordinate with Atto III timeline** — if Atto II (default flip) ships first, the tmux-runner integration targets code that's being deleted; in that case only ship the helper + hub annotation.
+
+### Known bug — `isBgFirstTurnDone` misses `state:"done"`
+
+Surfaced 2026-05-20 while verifying spec #9.
+
+`cmd/claude-profiles/delegate_bg.go:362-368` switches on `s.State` and treats only `blocked|completed|failed|stopped` as terminal. But live `state.json` files in `~/.claude/jobs/` contain `state:"done"` (verified in `002169d6/state.json` and a fresh test job on Claude Code 2.1.145). When a bg delegate ends in that state the watcher polls every 2s for the full `bgWatcherAbandonAfter` window (30 min) before giving up — the parent never sees the reply and `result.md` falls back to the timeout-abandon string.
+
+**Fix**: add `"done"` to the terminal-state set in `isBgFirstTurnDone`. The `s.LinkScanPath != "" || s.State != "blocked"` check beneath it already handles the JSONL-readiness condition for non-blocked terminals, so `done` slots in cleanly.
+
+**Effort**: trivial (one word added to the case statement, plus a smoke-test fixture exercising `state:"done"` in `scripts/smoke-delegate-bg.sh`). Worth bundling with whoever picks up #9 since they'll be touching `state.json` reads anyway.
+
+---
+
 ## When to delete this file
 
-- **Feature complete** = Atto III shipped end-to-end (default is `--bg`, tmux path demolished, `result.md` replaced or formally retired). Delete and add a final invariant to CLAUDE.md if any non-obvious gotchas remain.
+- **Feature complete** = Atto III shipped end-to-end (default is `--bg`, tmux path demolished, `result.md` replaced or formally retired), AND issues #7 / #9 / the `isBgFirstTurnDone` bug all implemented (or formally deferred/dropped). Delete and add a final invariant to CLAUDE.md if any non-obvious gotchas remain.
 - **Dropped** = decision to abandon the migration. Delete and (optionally) note in CLAUDE.md why, so future agents don't reopen the question.
