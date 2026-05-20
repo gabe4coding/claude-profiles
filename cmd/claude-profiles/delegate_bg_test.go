@@ -17,6 +17,11 @@ func TestBgDisplayNameGoalRoundtrip(t *testing.T) {
 		// A profile or task that legitimately contains " | " must not be
 		// mistaken for a goal prefix when no --goal was passed.
 		{"weird | profile", "task with | pipe", "", "", "task with | pipe"},
+		// A profile literally named "goal:foo" combined with a task that
+		// contains " | " would otherwise parse the colon-and-space-laden
+		// prefix as a goal. parseGoalFromName must reject candidates that
+		// don't satisfy validateGoalName.
+		{"goal:foo", "oh | wow", "", "", "oh | wow"},
 		// Non-ASCII task: truncation must be rune-aware, and the goal prefix
 		// must still parse back identically.
 		{"emoji", "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀", "rockets", "rockets", "🚀"},

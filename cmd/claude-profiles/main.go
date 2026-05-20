@@ -1296,7 +1296,9 @@ Commands:
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
   goal list          Group bg delegate sessions by --goal label. Reads
                        ~/.claude/jobs/*/state.json and prints one row per
-                       goal: "<goal> → N total · W working, B blocked, C completed".
+                       goal: "<goal> → N total · W working, B blocked, C completed"
+                       (with a trailing ", X other" when sessions are in any
+                       other state, e.g. failed or stopped).
   goal show <name>   List the bg sessions tagged with the given goal,
                        one row per session (id, state, profile, task).
   completion <shell> Emit a shell completion script (bash or zsh).

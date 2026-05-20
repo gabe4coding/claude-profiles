@@ -452,6 +452,13 @@ func bgDisplayName(profile, task, goal string) string {
 // parseGoalFromName extracts the goal name from a bg session's display name.
 // Returns "" when the name has no goal prefix or the prefix is malformed.
 // Mirror of bgDisplayName's prefix emission — see the format contract above.
+//
+// Defence in depth: the parsed candidate must itself satisfy validateGoalName.
+// Profile names are not constrained to exclude "goal:" or " | ", so without
+// this check a profile literally named "goal:foo" combined with a task that
+// contains " | " (e.g. "goal:foo: oh | wow") would register as a false-positive
+// goal-tagged session. Since validateGoalName rejects ':', '|', and whitespace,
+// any candidate containing them cannot have been produced by bgDisplayName.
 func parseGoalFromName(name string) string {
 	if !strings.HasPrefix(name, goalPrefix) {
 		return ""
@@ -461,7 +468,11 @@ func parseGoalFromName(name string) string {
 	if idx <= 0 {
 		return ""
 	}
-	return rest[:idx]
+	goal := rest[:idx]
+	if validateGoalName(goal) != nil {
+		return ""
+	}
+	return goal
 }
 
 // validateGoalName enforces the constraints bgDisplayName / parseGoalFromName
