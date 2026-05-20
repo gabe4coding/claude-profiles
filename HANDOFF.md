@@ -72,14 +72,13 @@ Spec: `docs/spec-issue-7-stop-hook-background-fields.md`
 **Effort**: small (< 20 lines of Go + 2 smoke cases). Safe to pick up independently of the Atto migration.
 
 ### Issue #9 — Session discovery via `claude agents --json`
-Spec: `docs/spec-issue-9-agent-discovery.md`
+Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20 against live interactive + `--bg` sessions)
 
-- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`.
-- Supplement `announceDelegateJSONLPath` and `cmdDelegateRunner` fallback to try the JSON API before filesystem scanning.
-- Keep filesystem scan as fallback for older Claude Code versions.
-- Hub annotation (optional follow-on).
+- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`. Schema is camelCase (`sessionId`, `cwd`, `startedAt`, `pid`, `kind`, `status`, `name`). `name` is only present on `kind:"background"` rows; `jsonl_path` is never present (read `linkScanPath` from `~/.claude/jobs/<daemonShort>/state.json`).
+- For the tmux path (`cmdDelegateRunner`), agents-JSON is **early-fail + disambiguation**, not a primary replacement for the filesystem scan — interactive rows have no `name` so matching is by `cwd`+`startedAt` window.
+- Hub annotation by `cwd` (optional follow-on).
 
-**Effort**: medium. The `session_discovery.go` helper is standalone; integration with the delegate runner is the complex part. **Coordinate with Atto III timeline** — if Atto II (default flip) ships first, Step 2/3 of this spec target code that's being deleted; only implement Steps 1 and 4 (helper + hub) in that scenario.
+**Effort**: medium. The helper is standalone; integration with the delegate runner is the complex part. **Coordinate with Atto III timeline** — if Atto II (default flip) ships first, the tmux-runner integration targets code that's being deleted; in that case only ship the helper + hub annotation.
 
 ---
 
