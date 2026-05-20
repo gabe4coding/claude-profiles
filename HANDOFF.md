@@ -64,15 +64,10 @@ Originally triaged in [PR #11](https://github.com/gabe4coding/claude-profiles/pu
 
 - ✅ **Issue #7** — Stop hook bg/cron guards. Shipped in [PR #12](https://github.com/gabe4coding/claude-profiles/pull/12).
 - ✅ **`isBgFirstTurnDone` misses `state:"done"`** — fixed in [PR #13](https://github.com/gabe4coding/claude-profiles/pull/13) (`isBgFirstTurnDone` in `cmd/claude-profiles/delegate_bg.go` + `TestIsBgFirstTurnDone`).
-- ⏳ **Issue #9** — Session discovery via `claude agents --json`. Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20).
-
-### Issue #9 detail
-
-- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`. Schema is camelCase (`sessionId`, `cwd`, `startedAt`, `pid`, `kind`, `status`, `name`). `name` is only present on `kind:"background"` rows; the JSONL path is not in the agents output at all (read `linkScanPath` from `~/.claude/jobs/<daemonShort>/state.json`).
-- For the tmux path (`cmdDelegateRunner`), agents-JSON is **early-fail + disambiguation**, not a primary replacement for the filesystem scan — interactive rows have no `name` so matching is by `cwd`+`startedAt` window.
-- Hub annotation by `cwd` (optional follow-on).
-
-**Effort**: medium. The helper is standalone; integration with the delegate runner is the complex part. **Coordinate with Atto III timeline** — if Atto II (default flip) ships first, the tmux-runner integration targets code that's being deleted; in that case only ship the helper + hub annotation.
+- 🚧 **Issue #9** — Session discovery via `claude agents --json`. Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20).
+  - ✅ Step 1 (helper + interface + tests): `session_discovery.go` + `session_discovery_test.go`. Schema pinned by fixture-based test.
+  - ⏳ Steps 2-3 (integration into `announceDelegateJSONLPath` and `cmdDelegateRunner` fallback): **coordinate with Atto III** — if Atto II ships first these target tmux code that's being deleted.
+  - ⏳ Step 4 (hub annotation): **deferred pending design decision.** The spec assumed no existing tracking, but the hub already shows bg sessions via `bgMap` (`background.go` → `roster.json`). Naively adding a "[N active]" badge from `agents --json` would duplicate this. Open question: replace `bgMap` entirely (live daemon vs file on disk, but loses Profile/Hint fields), augment it with live `busy`/`idle` status, or only surface non-claude-profiles sessions that are missing from `bgMap`?
 
 ---
 
