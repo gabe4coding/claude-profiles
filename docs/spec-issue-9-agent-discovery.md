@@ -152,7 +152,7 @@ Step 2 needs the runner to capture the spawned subprocess PID — currently `cmd
 
 Pick (b) for the first implementation; revisit (a) if false matches show up in practice.
 
-### Step 4 — Hub annotation (design locked 2026-05-20)
+### Step 4 — Hub annotation (design locked 2026-05-20, shipped 2026-05-20)
 
 Surfaces live `busy`/`idle` status from `claude agents --json` for the bg sessions already tracked by the hub via `bgMap` (from `~/.claude/daemon/roster.json`). **Augments** the existing data; does NOT replace `bgMap` (which carries Profile + Hint binding that `agents --json` lacks).
 
@@ -224,7 +224,7 @@ Schema verification is **complete** (see "Verified schema" above; runs captured 
 3. Update `announceDelegateJSONLPath` to use agents JSON for early-fail / disambiguation (Step 2). Keep filesystem scan as primary discovery for the tmux path.
 4. Update `cmdDelegateRunner` post-run fallback (Step 3) with cwd+startedAt window matching.
 5. Build, run `./scripts/smoke-distill.sh`, `./scripts/smoke-delegate-bg.sh`, `./scripts/smoke-ui.sh`.
-6. Hub annotation (Step 4): per "Locked decisions" above. Add `bgStatusCounts()` to `session_discovery.go`, wire `agentsByID` into `hubModel`, drive refresh via `tea.Tick`, extend `hubTitle()` for the suffix. Ships as a follow-on PR.
+6. ✅ Hub annotation (Step 4) — shipped 2026-05-20 in [PR #15](https://github.com/gabe4coding/claude-profiles/pull/15). Implementation: `BgStatusCounts`, `bgStatusCounts()`, `agentStatusByID()`, `agentsRefreshInterval` in `session_discovery.go`; `agentsByID` field + `agentsRefreshMsg`/`agentsTickMsg` + `bgStatusSuffix()` in `hub.go`. Cursor preserved across tick rebuilds via prev-index restore; `agentMapsEqual` skips rebuild when no status change. Tests: `TestBgStatusCounts`, `TestBgStatusSuffix`, `TestAgentStatusByID`, `TestAgentMapsEqual`, `TestHubTitleBgSuffixRendering`, `TestUpdateAgentsRefreshPreservesCursor`.
 
 ---
 

@@ -171,3 +171,61 @@ func TestAgentListerInterface(t *testing.T) {
 		t.Errorf("stub returned unexpected agents: %#v", got)
 	}
 }
+
+// TestAgentStatusByID confirms the sessionId→status index used by the
+// hub for O(1) lookup is built correctly from the fixture. If a later
+// rename of AgentInfo.Status or AgentInfo.SessionID slipped through,
+// the suffix annotation would silently go blank — this catches it.
+func TestAgentStatusByID(t *testing.T) {
+	var agents []AgentInfo
+	if err := json.Unmarshal([]byte(agentsFixture), &agents); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	idx := agentStatusByID(agents)
+	cases := map[string]string{
+		"96c68013-ae6d-473c-8db4-554e65a56f8b": "busy",
+		"f0a00f94-984f-401e-ac7b-0bd436e22d9c": "busy",
+		"40e314d0-5f46-4ed4-9f61-2bc627c30ae3": "idle",
+	}
+	for sid, want := range cases {
+		if got := idx[sid]; got != want {
+			t.Errorf("agentStatusByID[%q] = %q, want %q", sid, got, want)
+		}
+	}
+	if _, present := idx["nonexistent"]; present {
+		t.Errorf("agentStatusByID returned a value for an unknown sessionId")
+	}
+}
+
+// TestBgStatusCounts pins the four branches the hub renders against:
+// all-busy, all-idle, mixed, and "all stale" (sessions in roster but
+// absent from agents output → both counts zero, no suffix). The "stale"
+// branch is the most critical — it's the graceful-fallback case and a
+// regression would surface as fabricated counts in the hub.
+func TestBgStatusCounts(t *testing.T) {
+	bg := []BackgroundedSession{
+		{SessionID: "s1"},
+		{SessionID: "s2"},
+		{SessionID: "s3"},
+	}
+	cases := []struct {
+		name       string
+		agentsByID map[string]string
+		want       BgStatusCounts
+	}{
+		{"all busy", map[string]string{"s1": "busy", "s2": "busy", "s3": "busy"}, BgStatusCounts{Busy: 3}},
+		{"all idle", map[string]string{"s1": "idle", "s2": "idle", "s3": "idle"}, BgStatusCounts{Idle: 3}},
+		{"mixed", map[string]string{"s1": "busy", "s2": "idle", "s3": "busy"}, BgStatusCounts{Busy: 2, Idle: 1}},
+		{"all stale", map[string]string{}, BgStatusCounts{}},
+		{"nil map", nil, BgStatusCounts{}},
+		{"unknown status value", map[string]string{"s1": "weird"}, BgStatusCounts{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := bgStatusCounts(bg, c.agentsByID)
+			if got != c.want {
+				t.Errorf("bgStatusCounts(%v) = %#v, want %#v", c.agentsByID, got, c.want)
+			}
+		})
+	}
+}

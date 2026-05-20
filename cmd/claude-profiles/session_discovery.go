@@ -15,6 +15,12 @@ import (
 // quickly as a graceful-fallback miss rather than a UI freeze.
 const agentsCommandTimeout = 2 * time.Second
 
+// agentsRefreshInterval is the hub's polling cadence for `claude agents --json`.
+// 3s balances "live transitions visible" against "subprocess cost while the hub
+// is open". Pinned by spec-issue-9 Step 4 locked decisions (2026-05-20) — keep
+// in sync with the spec if changed.
+const agentsRefreshInterval = 3 * time.Second
+
 // AgentInfo is a single row from `claude agents --json`.
 //
 // Verified on Claude Code 2.1.145 against live interactive and background
@@ -125,4 +131,46 @@ func agentsByCwd(agents []AgentInfo) map[string][]AgentInfo {
 		out[a.Cwd] = append(out[a.Cwd], a)
 	}
 	return out
+}
+
+// agentStatusByID indexes agents by sessionId → status. Built once per
+// `claude agents --json` refresh; hub annotation does an O(1) lookup per
+// bg session to classify it as busy/idle.
+//
+// Naming note: the hub field is also called `agentsByID` (matches the spec
+// vocabulary). This builder uses the longer name to avoid a same-name
+// function/field shadow in the hub package.
+func agentStatusByID(agents []AgentInfo) map[string]string {
+	out := make(map[string]string, len(agents))
+	for _, a := range agents {
+		out[a.SessionID] = a.Status
+	}
+	return out
+}
+
+// BgStatusCounts is the per-profile rollup of live bg session status,
+// derived from `claude agents --json`. Sessions present in bgMap but
+// missing from agentsByID are excluded — those are roster.json entries
+// for already-stopped daemons, neither busy nor idle.
+type BgStatusCounts struct {
+	Busy int
+	Idle int
+}
+
+// bgStatusCounts tallies the live busy/idle distribution for a profile's
+// bg sessions. agentsByID may be nil (e.g. when `claude agents --json`
+// errored or hasn't replied yet) — in that case both counts return zero
+// and the hub renders no suffix, which is the locked graceful-fallback
+// behaviour for spec-issue-9 Step 4.
+func bgStatusCounts(bg []BackgroundedSession, agentsByID map[string]string) BgStatusCounts {
+	var c BgStatusCounts
+	for _, s := range bg {
+		switch agentsByID[s.SessionID] {
+		case "busy":
+			c.Busy++
+		case "idle":
+			c.Idle++
+		}
+	}
+	return c
 }

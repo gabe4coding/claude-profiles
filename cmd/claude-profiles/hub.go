@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -139,6 +140,13 @@ type hubModel struct {
 	bgMap      map[string][]BackgroundedSession
 	prefsStore ProfilePrefsStore
 
+	// agentsByID maps sessionId → status ("busy"|"idle") from the latest
+	// `claude agents --json` poll. Populated asynchronously on Init() and
+	// refreshed every agentsRefreshInterval via tea.Tick. nil/empty when
+	// the daemon is unreachable — hub renders without the bg-status suffix
+	// (graceful fallback per spec-issue-9 Step 4).
+	agentsByID map[string]string
+
 	delegate hubDelegate
 
 	// Pre-built full item list (sectioned, query-empty view).
@@ -149,7 +157,62 @@ type hubModel struct {
 }
 
 func (m hubModel) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, refreshAgentsCmd(), tickAgentsCmd())
+}
+
+// agentsRefreshMsg carries the parsed output of `claude agents --json`
+// back to the Update loop. A nil/empty slice means the daemon is
+// unreachable (or has no live sessions) — the handler treats both the
+// same way: clear the agentsByID map and re-render.
+type agentsRefreshMsg []AgentInfo
+
+// agentsTickMsg fires every agentsRefreshInterval; the Update handler
+// responds by scheduling the next refresh + tick pair. Separate from
+// agentsRefreshMsg so the subprocess call cost stays off the tick path's
+// critical section.
+type agentsTickMsg struct{}
+
+// refreshAgentsCmd shells out to `claude agents --json` and returns the
+// parsed result as an agentsRefreshMsg. Errors are swallowed deliberately
+// — the locked design says a daemon error means "no annotation", not
+// "surface the error to the user mid-typing". Subprocess timeout is
+// bounded by agentsCommandTimeout (2s) in session_discovery.go.
+func refreshAgentsCmd() tea.Cmd {
+	return func() tea.Msg {
+		agents, _ := claudeAgentsJSON()
+		return agentsRefreshMsg(agents)
+	}
+}
+
+// tickAgentsCmd schedules the next agentsTickMsg. Pattern: Init fires
+// both refreshAgentsCmd and tickAgentsCmd; on each tick, Update batches
+// refresh + reschedule. Tearing down the cycle means returning nil from
+// Update on the tick branch (we never do; the hub doesn't pause refresh).
+func tickAgentsCmd() tea.Cmd {
+	return tea.Tick(agentsRefreshInterval, func(time.Time) tea.Msg {
+		return agentsTickMsg{}
+	})
+}
+
+// agentMapsEqual is the "should I rebuild?" cheap check after each
+// refresh. Without it, the hub would rebuild the list every 3s even
+// when nothing changed — that's a UX cost (the cursor restoration we
+// do is a workaround, not a no-op) and a small CPU cost.
+//
+// Uses the comma-ok lookup deliberately: a session whose Status came
+// back as "" (degenerate AgentInfo) and the same session being absent
+// from the other map both leave b[k] == "" — comma-ok disambiguates.
+func agentMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		bv, ok := b[k]
+		if !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // rebuildIndex precomputes both the sectioned full view and the flat profile
@@ -231,7 +294,7 @@ func (m *hubModel) buildFlatProfiles() []profileItem {
 		}
 		out = append(out, profileItem{
 			loc:              loc,
-			titleStr:         hubTitle(loc, m.runningMap[loc.QualifiedID], m.bgMap[loc.QualifiedID], pinned, promptName, modal, ""),
+			titleStr:         hubTitle(loc, m.runningMap[loc.QualifiedID], m.bgMap[loc.QualifiedID], pinned, promptName, modal, "", m.agentsByID),
 			descStr:          hubDesc(loc),
 			pinnedPromptText: promptText,
 			filterStr:        buildFilterString(loc),
@@ -261,7 +324,7 @@ func (m *hubModel) buildSectionedItems() []list.Item {
 	makeItem := func(loc ProfileLocation, pinned bool, promptName, promptText, sectionRepoAlias string) profileItem {
 		return profileItem{
 			loc:              loc,
-			titleStr:         hubTitle(loc, m.runningMap[loc.QualifiedID], m.bgMap[loc.QualifiedID], pinned, promptName, modal, sectionRepoAlias),
+			titleStr:         hubTitle(loc, m.runningMap[loc.QualifiedID], m.bgMap[loc.QualifiedID], pinned, promptName, modal, sectionRepoAlias, m.agentsByID),
 			descStr:          hubDesc(loc),
 			pinnedPromptText: promptText,
 			filterStr:        buildFilterString(loc),
@@ -380,6 +443,29 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePalette(msg)
 		}
 		return m.updateMain(msg)
+
+	case agentsTickMsg:
+		// Schedule the next refresh + tick pair. Refresh runs in its own
+		// tea.Cmd goroutine so the tick branch returns immediately.
+		return m, tea.Batch(refreshAgentsCmd(), tickAgentsCmd())
+
+	case agentsRefreshMsg:
+		newMap := agentStatusByID([]AgentInfo(msg))
+		if agentMapsEqual(m.agentsByID, newMap) {
+			// No status change → no rebuild → cursor stays put naturally.
+			return m, nil
+		}
+		m.agentsByID = newMap
+		prevIdx := m.list.Index()
+		m.rebuildIndex()
+		m.applyFilter()
+		// applyFilter resets the cursor (Select(0) on filter view, first
+		// selectable on full view). Restore the previous index so the
+		// 3s tick doesn't yank the user's selection out from under them.
+		if items := m.list.Items(); prevIdx >= 0 && prevIdx < len(items) {
+			m.list.Select(prevIdx)
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -1004,10 +1090,30 @@ func computeModalTags(locs []ProfileLocation) modalTags {
 	}
 }
 
+// bgStatusSuffix renders the parenthetical breakdown of bg session
+// states attached to the "● bg" marker. Returns empty when both counts
+// are zero (e.g. roster.json holds stale entries for stopped daemons,
+// or `claude agents --json` hasn't replied yet) — locked design: never
+// fabricate an annotation.
+func bgStatusSuffix(c BgStatusCounts) string {
+	switch {
+	case c.Busy == 0 && c.Idle == 0:
+		return ""
+	case c.Idle == 0:
+		return fmt.Sprintf("(%d busy)", c.Busy)
+	case c.Busy == 0:
+		return fmt.Sprintf("(%d idle)", c.Idle)
+	default:
+		return fmt.Sprintf("(%d busy · %d idle)", c.Busy, c.Idle)
+	}
+}
+
 // hubTitle builds the row title with elision applied. sectionRepoAlias, when
 // non-empty, strips the matching prefix from the displayed QualifiedID (the
-// section header already labels the repo).
-func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession, pinned bool, pinnedPromptName string, modal modalTags, sectionRepoAlias string) string {
+// section header already labels the repo). agentsByID, when non-nil, drives
+// the "(N busy · M idle)" suffix on the bg marker — pass nil to skip the
+// annotation entirely (legacy callers / tests without an agents poll).
+func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSession, pinned bool, pinnedPromptName string, modal modalTags, sectionRepoAlias string, agentsByID map[string]string) string {
 	source := "local"
 	switch {
 	case loc.Builtin != "":
@@ -1026,6 +1132,9 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		marker := "● bg"
 		if n > 1 {
 			marker = fmt.Sprintf("● bg ×%d", n)
+		}
+		if suffix := bgStatusSuffix(bgStatusCounts(bg, agentsByID)); suffix != "" {
+			marker += " " + suffix
 		}
 		tags = append([]string{lipgloss.NewStyle().Foreground(cdsCoral).Bold(true).Render(marker)}, tags...)
 	}

@@ -127,6 +127,134 @@ func TestHubFilterByTyping(t *testing.T) {
 	}
 }
 
+// TestBgStatusSuffix pins the four user-visible render branches of
+// spec-issue-9 Step 4. The "all zero" case is the most load-bearing —
+// it's the graceful-fallback render when `claude agents --json` errors
+// or has nothing to say. A regression there would leak an empty "()"
+// into the hub.
+func TestBgStatusSuffix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   BgStatusCounts
+		want string
+	}{
+		{"both zero → no suffix", BgStatusCounts{}, ""},
+		{"busy only", BgStatusCounts{Busy: 2}, "(2 busy)"},
+		{"idle only", BgStatusCounts{Idle: 3}, "(3 idle)"},
+		{"mixed", BgStatusCounts{Busy: 1, Idle: 2}, "(1 busy · 2 idle)"},
+		{"single each", BgStatusCounts{Busy: 1, Idle: 1}, "(1 busy · 1 idle)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := bgStatusSuffix(c.in); got != c.want {
+				t.Errorf("bgStatusSuffix(%#v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestAgentMapsEqual confirms the cheap-diff guard the tick path uses
+// to skip rebuilds. Wrong logic here would either cause spurious cursor
+// jumps every 3s (always returning false) or stale annotation that
+// never updates (always returning true).
+func TestAgentMapsEqual(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b map[string]string
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"empty vs nil", map[string]string{}, nil, true},
+		{"identical", map[string]string{"s1": "busy"}, map[string]string{"s1": "busy"}, true},
+		{"different value", map[string]string{"s1": "busy"}, map[string]string{"s1": "idle"}, false},
+		{"different keys, same len", map[string]string{"s1": "busy"}, map[string]string{"s2": "busy"}, false},
+		{"different lengths", map[string]string{"s1": "busy"}, map[string]string{"s1": "busy", "s2": "idle"}, false},
+		// Regression: a key mapped to "" in a and absent from b both yield
+		// b[k]=="" under non-comma-ok lookup. Comma-ok disambiguates and
+		// reports them as different (which they are — different len anyway,
+		// but the principle holds even at equal length with overlapping keys).
+		{"empty value vs missing key, same len", map[string]string{"s1": "", "s2": "busy"}, map[string]string{"s2": "busy", "s3": ""}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := agentMapsEqual(c.a, c.b); got != c.want {
+				t.Errorf("agentMapsEqual(%v, %v) = %v, want %v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// TestHubTitleBgSuffixRendering exercises hubTitle end-to-end for the
+// new agentsByID path: a profile with two bg sessions (one busy, one
+// idle) must produce the locked suffix "(1 busy · 1 idle)" inside the
+// bg marker. Locks the integration between hubTitle's bg branch,
+// bgStatusCounts, and bgStatusSuffix — if any of the three drifts,
+// the rendered title catches it.
+func TestHubTitleBgSuffixRendering(t *testing.T) {
+	loc := ProfileLocation{Name: "alpha", QualifiedID: "alpha", JSONPath: "/tmp/missing/profile.json"}
+	bg := []BackgroundedSession{
+		{SessionID: "sid-busy"},
+		{SessionID: "sid-idle"},
+	}
+	agentsByID := map[string]string{
+		"sid-busy": "busy",
+		"sid-idle": "idle",
+	}
+	got := hubTitle(loc, nil, bg, false, "", modalTags{}, "", agentsByID)
+	if !bytes.Contains([]byte(got), []byte("(1 busy · 1 idle)")) {
+		t.Errorf("hubTitle suffix missing: %q", got)
+	}
+
+	// With nil agentsByID (graceful fallback), the suffix is omitted but
+	// the underlying bg marker is still there.
+	got = hubTitle(loc, nil, bg, false, "", modalTags{}, "", nil)
+	if bytes.Contains([]byte(got), []byte("busy")) || bytes.Contains([]byte(got), []byte("idle")) {
+		t.Errorf("hubTitle leaked busy/idle without agentsByID: %q", got)
+	}
+	if !bytes.Contains([]byte(got), []byte("bg")) {
+		t.Errorf("hubTitle dropped the bg marker when agentsByID was nil: %q", got)
+	}
+}
+
+// TestUpdateAgentsRefreshPreservesCursor pins the trickiest branch of
+// the new agentsRefreshMsg handler: after a successful refresh that
+// triggers a rebuild, the previously-selected list index must be
+// restored. Without restoration, the 3s tick would visibly yank the
+// cursor every poll cycle — a UX regression we'd otherwise only catch
+// in real-world use.
+func TestUpdateAgentsRefreshPreservesCursor(t *testing.T) {
+	m := newTestHubModel(sampleLocs())
+	if got := len(m.list.Items()); got < 2 {
+		t.Fatalf("test setup expected ≥2 items in list, got %d", got)
+	}
+	m.list.Select(1) // simulate the user having moved past the first row
+
+	updated, _ := m.Update(agentsRefreshMsg{
+		{SessionID: "sid", Status: "busy"},
+	})
+	m2, ok := updated.(hubModel)
+	if !ok {
+		t.Fatalf("Update returned non-hubModel: %T", updated)
+	}
+	if got := m2.agentsByID["sid"]; got != "busy" {
+		t.Errorf("agentsByID not populated after refresh: got %q, want %q", got, "busy")
+	}
+	if got := m2.list.Index(); got != 1 {
+		t.Errorf("cursor not restored: got %d, want 1", got)
+	}
+
+	// Second identical refresh — agentMapsEqual short-circuit means no
+	// rebuild, no Select call, cursor naturally stays put. This is the
+	// "common case" path that runs every 3s when nothing is changing.
+	updated2, _ := m2.Update(agentsRefreshMsg{
+		{SessionID: "sid", Status: "busy"},
+	})
+	m3, _ := updated2.(hubModel)
+	if got := m3.list.Index(); got != 1 {
+		t.Errorf("cursor moved on no-op refresh: got %d, want 1", got)
+	}
+}
+
 // TestHubPaletteNewAction: Tab opens the action palette; pressing 'n' inside
 // the palette quits the hub with actNew so the outer dispatcher creates a
 // new profile.
