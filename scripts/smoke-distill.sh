@@ -12,6 +12,8 @@
 #   E — .claude/-only commit                        → empty  (filter #1)
 #   F — uncommitted-only non-claude change          → empty  (only-commit policy)
 #   G — orphaned bookmark (rebase/squash sim)       → block  + bookmark self-heals
+#   H — background_tasks non-empty                  → empty  (filter: bg in flight)
+#   I — session_crons non-empty                     → empty  (filter: cron turn)
 #
 # Run from the repo root:
 #   ./scripts/smoke-distill.sh
@@ -66,10 +68,17 @@ export CLAUDE_PROFILES_WRAPPER_PID=12345
 # the hook's own exit code so the caller can distinguish "valid empty
 # result" from "the binary crashed". stderr is intentionally NOT
 # suppressed so panic traces or unexpected diagnostics reach the user.
+#
+# Optional $2 is extra JSON fields appended to the payload (no leading
+# comma). Used by the bg/cron guards which need to inject extra keys.
 invoke_hook() {
-  local sid=$1 raw rc=0
-  raw=$(printf '{"session_id":"%s","stop_hook_active":false}\n' "$sid" \
-        | "$BIN" _hook-stop) || rc=$?
+  local sid=$1 extra=${2:-} raw rc=0 payload
+  if [ -n "$extra" ]; then
+    payload=$(printf '{"session_id":"%s","stop_hook_active":false,%s}\n' "$sid" "$extra")
+  else
+    payload=$(printf '{"session_id":"%s","stop_hook_active":false}\n' "$sid")
+  fi
+  raw=$(printf '%s' "$payload" | "$BIN" _hook-stop) || rc=$?
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -79,8 +88,8 @@ invoke_hook() {
 }
 
 expect_empty() {
-  local label=$1 sid=$2 out rc=0
-  out=$(invoke_hook "$sid") || rc=$?
+  local label=$1 sid=$2 extra=${3:-} out rc=0
+  out=$(invoke_hook "$sid" "$extra") || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "  FAIL: $label — _hook-stop exited $rc"
     FAILURES=$((FAILURES+1))
@@ -176,6 +185,32 @@ if [ -n "$SHA_G" ] && [ "$SHA_G" != "deadbeef0000000000000000000000000000dead" ]
   echo "  PASS: bookmark self-healed to live SHA ($SHA_G)"
 else
   echo "  FAIL: bookmark not self-healed (still $SHA_G)"
+  FAILURES=$((FAILURES+1))
+fi
+
+echo "=== H: background_tasks non-empty → expect empty + bookmark stays"
+SHA_BEFORE_H=$(bookmark_sha)
+sleep 2
+echo h-work >> file.txt
+git add file.txt
+git commit -q -m "would-distill but bg in flight"
+expect_empty "H" "s8" '"background_tasks":[{"id":"abc"}]'
+SHA_AFTER_H=$(bookmark_sha)
+if [ "$SHA_AFTER_H" = "$SHA_BEFORE_H" ]; then
+  echo "  PASS: bookmark did not advance under background_tasks"
+else
+  echo "  FAIL: bookmark advanced ($SHA_BEFORE_H → $SHA_AFTER_H) despite bg in flight"
+  FAILURES=$((FAILURES+1))
+fi
+
+echo "=== I: session_crons non-empty → expect empty + bookmark stays"
+SHA_BEFORE_I=$(bookmark_sha)
+expect_empty "I" "s9" '"session_crons":[{"name":"nightly"}]'
+SHA_AFTER_I=$(bookmark_sha)
+if [ "$SHA_AFTER_I" = "$SHA_BEFORE_I" ]; then
+  echo "  PASS: bookmark did not advance under session_crons"
+else
+  echo "  FAIL: bookmark advanced ($SHA_BEFORE_I → $SHA_AFTER_I) despite cron turn"
   FAILURES=$((FAILURES+1))
 fi
 
