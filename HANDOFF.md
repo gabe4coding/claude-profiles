@@ -58,7 +58,32 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 - Settings file for `--bg` lives at `<delegate-dir>/settings.json` (NOT `os.TempDir`). Cleanup is tied to the delegate dir lifecycle.
 - The `--bg` path does NOT pass `--worktree`: Claude Code's bg machinery auto-creates one under `.claude/worktrees/` with cleanup tied to `claude rm`. For profiles with `Worktree:true`, this is a behaviour change confined to the `--bg` path (no deterministic `delegate-<id>` name).
 
+## Pending enhancement specs (triaged 2026-05-20)
+
+Two open issues were validated against the codebase and are queued as specced enhancements. Draft PR on branch `claude/charming-tesla-csK5z`.
+
+### Issue #7 — Stop hook: `background_tasks` / `session_crons` fields
+Spec: `docs/spec-issue-7-stop-hook-background-fields.md`
+
+- Extend `cmdHookStop()` input struct to parse the two new v2.1.145 fields.
+- Add early exits (before bookmark advancement) when bg delegates are in flight or the turn is cron-triggered.
+- Extend `scripts/smoke-distill.sh` with two synthetic-payload test cases.
+
+**Effort**: small (< 20 lines of Go + 2 smoke cases). Safe to pick up independently of the Atto migration.
+
+### Issue #9 — Session discovery via `claude agents --json`
+Spec: `docs/spec-issue-9-agent-discovery.md`
+
+- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`.
+- Supplement `announceDelegateJSONLPath` and `cmdDelegateRunner` fallback to try the JSON API before filesystem scanning.
+- Keep filesystem scan as fallback for older Claude Code versions.
+- Hub annotation (optional follow-on).
+
+**Effort**: medium. The `session_discovery.go` helper is standalone; integration with the delegate runner is the complex part. **Coordinate with Atto III timeline** — if Atto II (default flip) ships first, Step 2/3 of this spec target code that's being deleted; only implement Steps 1 and 4 (helper + hub) in that scenario.
+
+---
+
 ## When to delete this file
 
-- **Feature complete** = Atto III shipped end-to-end (default is `--bg`, tmux path demolished, `result.md` replaced or formally retired). Delete and add a final invariant to CLAUDE.md if any non-obvious gotchas remain.
+- **Feature complete** = Atto III shipped end-to-end (default is `--bg`, tmux path demolished, `result.md` replaced or formally retired), AND issues #7 and #9 implemented (or formally deferred/dropped). Delete and add a final invariant to CLAUDE.md if any non-obvious gotchas remain.
 - **Dropped** = decision to abandon the migration. Delete and (optionally) note in CLAUDE.md why, so future agents don't reopen the question.
