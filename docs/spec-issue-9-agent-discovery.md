@@ -224,7 +224,7 @@ Schema verification is **complete** (see "Verified schema" above; runs captured 
 3. Update `announceDelegateJSONLPath` to use agents JSON for early-fail / disambiguation (Step 2). Keep filesystem scan as primary discovery for the tmux path.
 4. Update `cmdDelegateRunner` post-run fallback (Step 3) with cwd+startedAt window matching.
 5. Build, run `./scripts/smoke-distill.sh`, `./scripts/smoke-delegate-bg.sh`, `./scripts/smoke-ui.sh`.
-6. ✅ Hub annotation (Step 4) — shipped 2026-05-20 (PR #15 — placeholder). Implementation: `BgStatusCounts`, `bgStatusCounts()`, `agentStatusByID()`, `agentsRefreshInterval` in `session_discovery.go`; `agentsByID` field + `agentsRefreshMsg`/`agentsTickMsg` + `bgStatusSuffix()` in `hub.go`. Cursor preserved across tick rebuilds via prev-index restore; `agentMapsEqual` skips rebuild when no status change. Tests: `TestBgStatusCounts`, `TestBgStatusSuffix`, `TestAgentStatusByID`, `TestAgentMapsEqual`, `TestHubTitleBgSuffixRendering`, `TestUpdateAgentsRefreshPreservesCursor`.
+6. ✅ Hub annotation (Step 4) — shipped 2026-05-20 in [PR #15](https://github.com/gabe4coding/claude-profiles/pull/15). Implementation: `BgStatusCounts`, `bgStatusCounts()`, `agentStatusByID()`, `agentsRefreshInterval` in `session_discovery.go`; `agentsByID` field + `agentsRefreshMsg`/`agentsTickMsg` + `bgStatusSuffix()` in `hub.go`. Cursor preserved across tick rebuilds via prev-index restore; `agentMapsEqual` skips rebuild when no status change. Tests: `TestBgStatusCounts`, `TestBgStatusSuffix`, `TestAgentStatusByID`, `TestAgentMapsEqual`, `TestHubTitleBgSuffixRendering`, `TestUpdateAgentsRefreshPreservesCursor`.
 
 ---
 

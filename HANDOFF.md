@@ -67,7 +67,7 @@ Originally triaged in [PR #11](https://github.com/gabe4coding/claude-profiles/pu
 - 🚧 **Issue #9** — Session discovery via `claude agents --json`. Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20, Step 4 design locked 2026-05-20, Step 4 shipped 2026-05-20).
   - ✅ Step 1 (helper + interface + tests): `session_discovery.go` + `session_discovery_test.go`. Schema pinned by fixture-based test. Shipped in [PR #14](https://github.com/gabe4coding/claude-profiles/pull/14).
   - ⏳ Steps 2-3 (integration into `announceDelegateJSONLPath` and `cmdDelegateRunner` fallback): **coordinate with Atto III** — if Atto II ships first these target tmux code that's being deleted.
-  - ✅ Step 4 (hub annotation): bg-only, 2-state `busy`/`idle` rollup via `bgStatusCounts`, `tea.Tick` 3s refresh, suffix `(N busy)` / `(N busy · M idle)` on the `● bg` marker. Graceful fallback when `agents --json` errors (no annotation, base marker unchanged). Cursor preserved across rebuilds so the 3s tick doesn't yank user selection. Shipped in [PR #15](https://github.com/gabe4coding/claude-profiles/pull/15) (placeholder — fill in after `gh pr create`).
+  - ✅ Step 4 (hub annotation): bg-only, 2-state `busy`/`idle` rollup via `bgStatusCounts`, `tea.Tick` 3s refresh, suffix `(N busy)` / `(N busy · M idle)` on the `● bg` marker. Graceful fallback when `agents --json` errors (no annotation, base marker unchanged). Cursor preserved across rebuilds so the 3s tick doesn't yank user selection. Shipped in [PR #15](https://github.com/gabe4coding/claude-profiles/pull/15).
 
 ---
 

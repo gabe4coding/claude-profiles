@@ -169,6 +169,11 @@ func TestAgentMapsEqual(t *testing.T) {
 		{"different value", map[string]string{"s1": "busy"}, map[string]string{"s1": "idle"}, false},
 		{"different keys, same len", map[string]string{"s1": "busy"}, map[string]string{"s2": "busy"}, false},
 		{"different lengths", map[string]string{"s1": "busy"}, map[string]string{"s1": "busy", "s2": "idle"}, false},
+		// Regression: a key mapped to "" in a and absent from b both yield
+		// b[k]=="" under non-comma-ok lookup. Comma-ok disambiguates and
+		// reports them as different (which they are — different len anyway,
+		// but the principle holds even at equal length with overlapping keys).
+		{"empty value vs missing key, same len", map[string]string{"s1": "", "s2": "busy"}, map[string]string{"s2": "busy", "s3": ""}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -198,12 +198,17 @@ func tickAgentsCmd() tea.Cmd {
 // refresh. Without it, the hub would rebuild the list every 3s even
 // when nothing changed — that's a UX cost (the cursor restoration we
 // do is a workaround, not a no-op) and a small CPU cost.
+//
+// Uses the comma-ok lookup deliberately: a session whose Status came
+// back as "" (degenerate AgentInfo) and the same session being absent
+// from the other map both leave b[k] == "" — comma-ok disambiguates.
 func agentMapsEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for k, v := range a {
-		if b[k] != v {
+		bv, ok := b[k]
+		if !ok || bv != v {
 			return false
 		}
 	}
