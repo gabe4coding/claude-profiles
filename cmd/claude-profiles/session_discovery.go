@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 )
 
@@ -42,8 +44,11 @@ type AgentInfo struct {
 }
 
 // DaemonShort returns the first 8 characters of the session ID — the
-// directory name under ~/.claude/jobs/ for background sessions. Empty if
-// SessionID is too short to be a valid UUID.
+// directory name under ~/.claude/jobs/ for background sessions. Returns
+// empty if SessionID has fewer than 8 characters (degenerate input or
+// uninitialised AgentInfo). Does NOT validate UUID format — Claude Code
+// daemon emits UUIDs and the consumer's only contract is the 8-char dir
+// name, so format validation would be busywork.
 func (a AgentInfo) DaemonShort() string {
 	if len(a.SessionID) < 8 {
 		return ""
@@ -61,16 +66,27 @@ type agentLister interface {
 type realAgentLister struct{}
 
 func (realAgentLister) listAgents() ([]AgentInfo, error) {
-	out, err := exec.Command("claude", "agents", "--json").Output()
+	cmd := exec.Command("claude", "agents", "--json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		// Surface stderr in the error so callers (and operators) can tell
+		// `claude not on PATH` from `claude rejected the flag` from
+		// `daemon refused to answer`. Without this, every failure looks
+		// the same as "the helper doesn't work" and is hard to diagnose.
+		if s := bytes.TrimSpace(stderr.Bytes()); len(s) > 0 {
+			return nil, fmt.Errorf("claude agents --json: %w: %s", err, s)
+		}
+		return nil, fmt.Errorf("claude agents --json: %w", err)
 	}
-	if len(out) == 0 {
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
 		return nil, nil
 	}
 	var agents []AgentInfo
-	if err := json.Unmarshal(out, &agents); err != nil {
-		return nil, err
+	if err := json.Unmarshal(trimmed, &agents); err != nil {
+		return nil, fmt.Errorf("parse claude agents --json output: %w", err)
 	}
 	return agents, nil
 }

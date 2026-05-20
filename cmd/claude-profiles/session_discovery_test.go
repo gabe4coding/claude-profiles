@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -49,15 +51,29 @@ const agentsFixture = `[
   }
 ]`
 
+// decodeStrict mirrors the schema-pinning intent: any JSON key that
+// AgentInfo doesn't declare is an error. Plain json.Unmarshal silently
+// drops unknown fields, which would let a Claude Code schema addition
+// (or rename of an existing field with a new one taking its place) slip
+// through this test undetected.
+func decodeStrict(t *testing.T, raw string, dst any) {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		t.Fatalf("strict decode: %v", err)
+	}
+}
+
 // TestAgentInfoUnmarshalFromFixture pins the JSON contract. If
 // `claude agents --json` ever renames a field (e.g. cwd → working_dir or
-// sessionId → session_id) this test breaks and we know to update both
-// AgentInfo and the spec rather than silently lose data.
+// sessionId → session_id) OR adds a new top-level field, this test
+// breaks and we know to update both AgentInfo and the spec rather than
+// silently lose data. The strict decoder catches the additive case;
+// the explicit field-by-field comparison catches the rename case.
 func TestAgentInfoUnmarshalFromFixture(t *testing.T) {
 	var agents []AgentInfo
-	if err := json.Unmarshal([]byte(agentsFixture), &agents); err != nil {
-		t.Fatalf("unmarshal fixture: %v", err)
-	}
+	decodeStrict(t, agentsFixture, &agents)
 	if len(agents) != 3 {
 		t.Fatalf("got %d agents, want 3", len(agents))
 	}
@@ -80,6 +96,23 @@ func TestAgentInfoUnmarshalFromFixture(t *testing.T) {
 	bg := agents[1]
 	if bg.Kind != "background" || bg.Name != "profile-x:task summary" {
 		t.Errorf("bg row kind/name mismatch: kind=%q name=%q", bg.Kind, bg.Name)
+	}
+}
+
+// TestAgentInfoRejectsUnknownField is the negative test for the strict
+// decoder above. If this stops failing, decodeStrict has stopped
+// enforcing the contract — that would silently re-enable schema drift.
+func TestAgentInfoRejectsUnknownField(t *testing.T) {
+	withExtra := `[{"pid":1,"cwd":"/x","kind":"interactive","sessionId":"abc12345","status":"idle","startedAt":1,"newClaudeCodeField":"surprise"}]`
+	dec := json.NewDecoder(strings.NewReader(withExtra))
+	dec.DisallowUnknownFields()
+	var agents []AgentInfo
+	err := dec.Decode(&agents)
+	if err == nil {
+		t.Fatal("expected DisallowUnknownFields to reject unknown key, got nil error")
+	}
+	if !strings.Contains(err.Error(), "newClaudeCodeField") {
+		t.Errorf("error did not mention the unknown field: %v", err)
 	}
 }
 
