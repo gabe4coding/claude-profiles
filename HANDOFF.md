@@ -63,7 +63,7 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 Originally triaged in [PR #11](https://github.com/gabe4coding/claude-profiles/pull/11). Status:
 
 - ✅ **Issue #7** — Stop hook bg/cron guards. Shipped in [PR #12](https://github.com/gabe4coding/claude-profiles/pull/12).
-- ✅ **`isBgFirstTurnDone` misses `state:"done"`** — fixed in this branch's predecessor PR (see `cmd/claude-profiles/delegate_bg.go:362-368` + `TestIsBgFirstTurnDone`).
+- ✅ **`isBgFirstTurnDone` misses `state:"done"`** — fixed in [PR #13](https://github.com/gabe4coding/claude-profiles/pull/13) (`isBgFirstTurnDone` in `cmd/claude-profiles/delegate_bg.go` + `TestIsBgFirstTurnDone`).
 - ⏳ **Issue #9** — Session discovery via `claude agents --json`. Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20).
 
 ### Issue #9 detail
