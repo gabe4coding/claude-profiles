@@ -60,7 +60,7 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 
 ## Pending enhancement specs (triaged 2026-05-20)
 
-Two open issues were validated against the codebase and are queued as specced enhancements. Draft PR on branch `claude/charming-tesla-csK5z`.
+Two open issues were validated against the codebase and are queued as specced enhancements. Tracking: [PR #11](https://github.com/gabe4coding/claude-profiles/pull/11).
 
 ### Issue #7 — Stop hook: `background_tasks` / `session_crons` fields
 Spec: `docs/spec-issue-7-stop-hook-background-fields.md`
@@ -74,7 +74,7 @@ Spec: `docs/spec-issue-7-stop-hook-background-fields.md`
 ### Issue #9 — Session discovery via `claude agents --json`
 Spec: `docs/spec-issue-9-agent-discovery.md` (schema verified 2026-05-20 against live interactive + `--bg` sessions)
 
-- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`. Schema is camelCase (`sessionId`, `cwd`, `startedAt`, `pid`, `kind`, `status`, `name`). `name` is only present on `kind:"background"` rows; `jsonl_path` is never present (read `linkScanPath` from `~/.claude/jobs/<daemonShort>/state.json`).
+- Add `AgentInfo` struct + `claudeAgentsJSON()` helper in a new `session_discovery.go`. Schema is camelCase (`sessionId`, `cwd`, `startedAt`, `pid`, `kind`, `status`, `name`). `name` is only present on `kind:"background"` rows; the JSONL path is not in the agents output at all (read `linkScanPath` from `~/.claude/jobs/<daemonShort>/state.json`).
 - For the tmux path (`cmdDelegateRunner`), agents-JSON is **early-fail + disambiguation**, not a primary replacement for the filesystem scan — interactive rows have no `name` so matching is by `cwd`+`startedAt` window.
 - Hub annotation by `cwd` (optional follow-on).
 

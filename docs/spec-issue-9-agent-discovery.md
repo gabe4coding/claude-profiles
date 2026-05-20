@@ -49,7 +49,7 @@ Claude Code v2.1.145 adds `claude agents --json`, which returns live session met
 - When `claude --bg` is invoked **without `--name`**, the daemon auto-generates the name (`nameSource:"auto"` in `state.json`). While the job is `busy` it shows the raw prompt; after completion it gets summarised to a short string.
 - When `claude-profiles --bg` dispatches (via `cmdDelegateBgDispatch` → `delegate_bg.go:195`), it **always passes `--name <bgDisplayName>`**, so the bg row's `name` field is **stable and grep-able** — format `<profile>:<task>` or `goal:<g> | <profile>:<task>` (see `bgDisplayName` for the contract).
 - **Still no `jsonl_path` field.** The JSONL path lives in `~/.claude/jobs/<daemonShort>/state.json` as the `linkScanPath` key. `daemonShort` is the first 8 hex chars of `sessionId`.
-- Status observed: `busy`, `idle`. A `state:"done"` bg job in `state.json` shows as `status:"idle"` in `agents --json` until the daemon is killed (e.g. via `claude stop`). So `agents --json` status alone cannot distinguish "still working" from "done and idle"; cross-reference `state.json.state` for that.
+- Status observed: `busy`, `idle`. A bg job that has reached a terminal `state.json.state` (the bg watcher in `delegate_bg.go:364` treats `blocked|completed|failed|stopped` as terminal; values like `done` have also been observed in the wild) still shows as `status:"idle"` in `agents --json` until the daemon is killed (e.g. via `claude stop`). `agents --json` status alone cannot distinguish "live and waiting" from "terminated but not stopped"; consumers must cross-reference `state.json.state`.
 
 #### Consequences for matching strategy
 
