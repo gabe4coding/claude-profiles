@@ -187,7 +187,12 @@ func cmdDelegateBgDispatch(args []string) {
 		claudeArgs = append(claudeArgs, "--permission-mode", "auto")
 	}
 
-	displayName := bgDisplayName(req.Profile, req.Task)
+	if err := validateGoalName(req.Goal); err != nil {
+		body := fmt.Sprintf("(delegate %s rejected: %v)", delegateID, err)
+		writeDelegateResult(dir, body)
+		fatal(err)
+	}
+	displayName := bgDisplayName(req.Profile, req.Task, req.Goal)
 	claudeArgs = append(claudeArgs, "--name", displayName)
 
 	if req.Task != "" {
@@ -402,14 +407,33 @@ func parseBackgroundedID(out string) string {
 	return ""
 }
 
+// Display-name grammar for bg sessions. The writer (bgDisplayName) and the
+// parser (parseGoalFromName, used by `claude-profiles goal`) must agree on
+// this. The format is a roundtrip contract; do not change without updating
+// both sides plus the unit test in delegate_bg_test.go.
+//
+//	<no goal>:   "<profile>: <task>"
+//	<with goal>: "goal:<name> | <profile>: <task>"
+//
+// goalDelim is the literal separator between the goal segment and the rest.
+// goalPrefix marks the goal segment so a profile or task literally containing
+// " | " is not mistaken for a goal.
+const (
+	goalPrefix = "goal:"
+	goalDelim  = " | "
+)
+
 // bgDisplayName produces a stable, human-readable name for the bg
 // session. Agent View rows are sorted by this; keeping the profile
 // first makes cross-profile dispatches easy to read at a glance.
 //
+// When goal is non-empty, the row is prefixed with "goal:<name> | " so
+// `claude-profiles goal list` can group sessions by goal.
+//
 // Truncation is rune-aware (not byte-based): tasks in non-ASCII text
 // must not be split mid-rune, otherwise Agent View renders replacement
 // glyphs in the row name.
-func bgDisplayName(profile, task string) string {
+func bgDisplayName(profile, task, goal string) string {
 	const maxTaskRunes = 50
 	t := strings.TrimSpace(task)
 	// Strip newlines so the name renders as a single row entry.
@@ -418,7 +442,44 @@ func bgDisplayName(profile, task string) string {
 	if runes := []rune(t); len(runes) > maxTaskRunes {
 		t = string(runes[:maxTaskRunes]) + "…"
 	}
-	return profile + ": " + t
+	base := profile + ": " + t
+	if g := strings.TrimSpace(goal); g != "" {
+		return goalPrefix + g + goalDelim + base
+	}
+	return base
+}
+
+// parseGoalFromName extracts the goal name from a bg session's display name.
+// Returns "" when the name has no goal prefix or the prefix is malformed.
+// Mirror of bgDisplayName's prefix emission — see the format contract above.
+func parseGoalFromName(name string) string {
+	if !strings.HasPrefix(name, goalPrefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(name, goalPrefix)
+	idx := strings.Index(rest, goalDelim)
+	if idx <= 0 {
+		return ""
+	}
+	return rest[:idx]
+}
+
+// validateGoalName enforces the constraints bgDisplayName / parseGoalFromName
+// rely on: a goal name cannot contain the delimiter, the prefix-colon, or any
+// whitespace at its edges. Returns nil for the empty string (callers treat
+// empty as "no goal") and an error otherwise. Called at flag-parse time so
+// users see the failure before any dispatch happens.
+func validateGoalName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("goal name has leading or trailing whitespace: %q", name)
+	}
+	if strings.ContainsAny(name, "|: \t\r\n") {
+		return fmt.Errorf("goal name contains a reserved character ('|', ':', or whitespace): %q", name)
+	}
+	return nil
 }
 
 // spawnBgWatcher starts `claude-profiles _delegate-bg-watcher <id>` as a

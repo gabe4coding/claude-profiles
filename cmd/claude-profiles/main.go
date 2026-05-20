@@ -114,6 +114,8 @@ func main() {
 		cmdImport(args[1:])
 	case "repo":
 		cmdRepo(args[1:])
+	case "goal":
+		cmdGoal(args[1:])
 	case "copy", "cp":
 		cmdCopy(args[1:])
 	case "help", "--help", "-h":
@@ -1292,6 +1294,11 @@ Commands:
   repo list          Show registered repos and last sync status
   repo remove <id>   Unregister a repo (by alias or URL) and delete cache
   repo sync [id]     Sync repos now (foreground). Auto-sync runs every 5min.
+  goal list          Group bg delegate sessions by --goal label. Reads
+                       ~/.claude/jobs/*/state.json and prints one row per
+                       goal: "<goal> → N total · W working, B blocked, C completed".
+  goal show <name>   List the bg sessions tagged with the given goal,
+                       one row per session (id, state, profile, task).
   completion <shell> Emit a shell completion script (bash or zsh).
                        Wire up with: eval "$(claude-profiles completion zsh)"
   update             Check for a newer version and install it immediately.
