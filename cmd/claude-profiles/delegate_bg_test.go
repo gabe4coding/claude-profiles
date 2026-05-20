@@ -54,6 +54,35 @@ func TestValidateGoalName(t *testing.T) {
 	}
 }
 
+// isBgFirstTurnDone gates the watcher's "first turn complete" detection.
+// Missing a terminal state value means the delegate runs out the
+// bgWatcherAbandonAfter (30 min) window and never delivers result.md.
+// Pins the full terminal-state set including "done" (observed on
+// Claude Code 2.1.145+ in real state.json files).
+func TestIsBgFirstTurnDone(t *testing.T) {
+	cases := []struct {
+		state    string
+		linkPath string
+		want     bool
+	}{
+		{"blocked", "/some/path.jsonl", true},
+		{"blocked", "", false}, // blocked without linkScanPath is not yet ready
+		{"completed", "", true},
+		{"failed", "", true},
+		{"stopped", "", true},
+		{"done", "", true}, // 2.1.145+ terminal value
+		{"working", "/some/path.jsonl", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got := isBgFirstTurnDone(bgJobState{State: c.state, LinkScanPath: c.linkPath})
+		if got != c.want {
+			t.Errorf("isBgFirstTurnDone(state=%q, link=%q) = %v, want %v",
+				c.state, c.linkPath, got, c.want)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
