@@ -255,6 +255,29 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# ---- Step 4: goal-tagged dispatch writes the right --name -------------------
+#
+# Exercises the second leg of the bgDisplayName ↔ parseGoalFromName roundtrip:
+# request.json{goal:"X"} should result in `--name "goal:X | <profile>: <task>"`
+# being passed to claude --bg. Pure write-path assertion — we don't run the
+# watcher for this delegate (the previous one already covered watcher → hook).
+echo "==> Step 4: dispatching delegate with goal-tagged request"
+GOAL_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+GOAL_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$GOAL_DELG_ID"
+mkdir -p "$GOAL_DELG_DIR"
+cat > "$GOAL_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"echo goal smoke","parent_session":"$PARENT_SID","delegate_id":"$GOAL_DELG_ID","dir":"","goal":"smoke-goal"}
+JSON
+
+"$BIN" _delegate-bg-dispatch "$GOAL_DELG_ID" >/dev/null
+
+# bg-args.log is written by the stub on every `claude --bg` invocation: one
+# arg per line. The value passed to --name is on the line right after the
+# literal `--name` token.
+name_value=$(awk '/^--name$/{getline; print; exit}' "$SMOKE/bg-args.log")
+expected_prefix="goal:smoke-goal | smoke-bg: echo goal smoke"
+assert_eq "$name_value" "$expected_prefix" "dispatcher applies goal prefix to --name"
+
 # ---- Summary ---------------------------------------------------------------
 echo
 if [ "$FAILURES" -eq 0 ]; then

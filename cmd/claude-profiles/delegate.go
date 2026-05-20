@@ -30,7 +30,7 @@ import (
 //      context, and renames them to delivered.md so they're not re-injected.
 
 const delegateLaunchScript = `#!/bin/bash
-# Usage: delegate-launch.sh <profile-id> [--bg] [--dir <path>] <task...>
+# Usage: delegate-launch.sh <profile-id> [--bg] [--dir <path>] [--goal <name>] <task...>
 # Sets up a /delegate request and dispatches the delegate. Two modes:
 #
 #   tmux mode (default): spawn the delegate in a new tmux window via
@@ -51,8 +51,11 @@ PROFILE="$1"; shift
 # Optional leading flags, in any order:
 #   --bg            dispatch via claude --bg (Agent View), no tmux required
 #   --dir <path>    resolve to absolute now, while we still have the parent's cwd
+#   --goal <name>   tag the bg session for grouping via ` + "`claude-profiles goal`" + `
+#                   (requires --bg; rejected otherwise)
 BG_MODE=""
 REPO_DIR=""
+GOAL_NAME=""
 while true; do
   case "${1:-}" in
     --bg)
@@ -62,6 +65,11 @@ while true; do
     --dir)
       if [ -z "${2:-}" ]; then echo "delegate-launch.sh: --dir requires a path argument" >&2; exit 1; fi
       REPO_DIR=$(cd "$2" && pwd) || { echo "delegate-launch.sh: --dir path does not exist: $2" >&2; exit 1; }
+      shift 2
+      ;;
+    --goal)
+      if [ -z "${2:-}" ]; then echo "delegate-launch.sh: --goal requires a name argument" >&2; exit 1; fi
+      GOAL_NAME="$2"
       shift 2
       ;;
     *)
@@ -81,8 +89,16 @@ if [ -z "$BG_MODE" ] && [ -z "$TMUX" ]; then
   exit 1
 fi
 
+# --goal only affects the Agent View row's display name; tmux mode has no
+# row to tag. Reject loudly so users don't think a typo'd --bg silently
+# worked.
+if [ -n "$GOAL_NAME" ] && [ -z "$BG_MODE" ]; then
+  echo "/delegate --goal requires --bg (the goal grouping only exists for Agent View bg sessions)." >&2
+  exit 1
+fi
+
 TASK="$*"
-if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--bg] [--dir <path>] <task...>" >&2; exit 1; fi
+if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--bg] [--dir <path>] [--goal <name>] <task...>" >&2; exit 1; fi
 
 PARENT_SID=$(jq -r '.session_id // empty' "$HOME/.claude-profiles/run/${CLAUDE_PROFILES_WRAPPER_PID}.json" 2>/dev/null)
 if [ -z "$PARENT_SID" ]; then echo "/delegate cannot find the parent session id yet — wait a few seconds and retry." >&2; exit 1; fi
@@ -96,7 +112,8 @@ jq -nc \
   --arg parent "$PARENT_SID" \
   --arg id "$DELG_ID" \
   --arg dir "$REPO_DIR" \
-  '{profile: $profile, task: $task, parent_session: $parent, delegate_id: $id, dir: $dir}' \
+  --arg goal "$GOAL_NAME" \
+  '{profile: $profile, task: $task, parent_session: $parent, delegate_id: $id, dir: $dir, goal: $goal}' \
   > "$DIR/request.json"
 
 echo "DELEGATE_ID=$DELG_ID"
@@ -261,7 +278,7 @@ fi
 
 const delegateSlashCommand = `---
 description: Delegate an interactive subtask to another profile. Default mode opens a tmux window and streams progress live; --bg mode dispatches via Claude Code Agent View (claude --bg) and the result is delivered on your next prompt via the UserPromptSubmit hook.
-argument-hint: <profile-id|intent> [--bg] [--dir <path>] [task...]
+argument-hint: <profile-id|intent> [--bg] [--dir <path>] [--goal <name>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
 The user typed ` + "`/delegate $ARGUMENTS`" + `.
@@ -272,15 +289,16 @@ Parse $ARGUMENTS:
 - First whitespace-separated token = profile selector (free-form intent → classify against Available profiles list).
 - ` + "`--bg`" + ` (anywhere among the leading flags) selects bg mode: the delegate dispatches via ` + "`claude --bg`" + ` and shows up in Agent View. No live progress; the result is delivered on the user's NEXT prompt via the UserPromptSubmit hook. Consume the token.
 - ` + "`--dir <path>`" + ` (anywhere among the leading flags) is the target working directory; consume both tokens.
+- ` + "`--goal <name>`" + ` (anywhere among the leading flags) tags the bg session with a goal label so ` + "`claude-profiles goal list`" + ` can group it later. **Requires --bg.** The name cannot contain ` + "`|`" + `, ` + "`:`" + `, or whitespace; pick a short kebab-case label (e.g. ` + "`refactor-auth`" + `). Consume both tokens.
 - Everything remaining = task body.
 
 If profile or task is empty, ask the user with AskUserQuestion.
 
 # 2. Launch
 
-Call the Bash tool, synchronously. Pass ` + "`--bg`" + ` and/or ` + "`--dir <path>`" + ` through to the script in the same order they appeared:
+Call the Bash tool, synchronously. Pass ` + "`--bg`" + `, ` + "`--dir <path>`" + ` and/or ` + "`--goal <name>`" + ` through to the script in the same order they appeared:
 
-  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--bg] [--dir "<path>"] "<task body...>"
+  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--bg] [--dir "<path>"] [--goal "<name>"] "<task body...>"
 
 That script does all the bookkeeping (request file, dispatch, env guards). Output depends on mode.
 
@@ -300,7 +318,7 @@ Read them out of the script's output and remember the id and the result path. Co
   DELEGATE_RESULT=<path to result.md>
   DELEGATE_DIR=<delegate dir>
   DELEGATE_BG_ID=<8-char Agent View session id>
-  DELEGATE_BG_NAME=<profile>:<truncated-task>
+  DELEGATE_BG_NAME=[goal:<name> | ]<profile>: <truncated-task>
 
 The delegate is already running in the background. **Skip Step 3 entirely** — there is no live watcher subprocess to monitor. Tell the user in 1-2 short lines:
 
@@ -591,6 +609,7 @@ type delegateRequest struct {
 	ParentSession string `json:"parent_session"`
 	DelegateID    string `json:"delegate_id"`
 	Dir           string `json:"dir,omitempty"`
+	Goal          string `json:"goal,omitempty"`
 }
 
 func findDelegateRequest(delegateID string) (string, delegateRequest) {

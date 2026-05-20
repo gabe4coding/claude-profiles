@@ -69,7 +69,7 @@ _claude_profiles() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
 
-  local subcmds="launch list ls new create ask run exec show doctor analytics stats probe edit delete rm export import copy cp repo completion help version"
+  local subcmds="launch list ls new create ask run exec show doctor analytics stats probe edit delete rm export import copy cp repo goal completion help version"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
     profiles=$(claude-profiles _complete profiles 2>/dev/null)
@@ -104,6 +104,11 @@ _claude_profiles() {
         esac
       fi
       ;;
+    goal)
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "list ls show" -- "$cur") )
+      fi
+      ;;
   esac
 }
 complete -F _claude_profiles claude-profiles
@@ -130,11 +135,13 @@ _claude_profiles() {
     'import:Import a profile JSON'
     'copy:Copy a repo profile to local'
     'repo:Manage registered repos'
+    'goal:Group bg delegate sessions by --goal label'
     'completion:Emit a shell completion script'
     'help:Show help'
     'version:Print binary version'
   )
   repo_subcmds=(add list ls remove rm sync)
+  goal_subcmds=(list ls show)
   profiles=( ${(f)"$(claude-profiles _complete profiles 2>/dev/null)"} )
   repo_profiles=( ${(M)profiles:#*/*} )
   repos=( ${(f)"$(claude-profiles _complete repos 2>/dev/null)"} )
@@ -164,6 +171,11 @@ _claude_profiles() {
         case "${words[3]}" in
           remove|rm|sync) _describe -t repos 'repo alias' repos ;;
         esac
+      fi
+      ;;
+    goal)
+      if (( CURRENT == 3 )); then
+        _values 'goal subcommand' $goal_subcmds
       fi
       ;;
   esac

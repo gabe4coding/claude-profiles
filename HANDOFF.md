@@ -26,12 +26,14 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 
 1. **Real-world validation of Atto I.** Smoke uses a stub `claude`. Before flipping defaults we want a human to actually dispatch a few `--bg` delegates and confirm: state.json shape stable, distill Stop hook actually fires under `--bg`, parent hook delivers result.md content end-to-end.
 
-2. **Atto I.5 (optional, additive) — `claude-profiles goal` command.** Pure read layer over `~/.claude/jobs/*/state.json`:
-   - `/delegate --bg --goal <name>` prepends `goal:<name> | ` to the display name in `bgDisplayName`
-   - `claude-profiles goal list` groups bg sessions by `goal:*` prefix, prints `goal → N working, M blocked, K completed`
-   - `claude-profiles goal show <name>` filters one goal
-   - No changes to `result.md` or the hook; no risk to existing flows
-   - Stack as new PR on top of `claude/define-next-task-dfkie` (or on top of `main` after PR #4 merges)
+2. **Atto I.5 — SHIPPED** (draft PR on branch `claude/atto-i5-goal-d6fc3a7c`).
+   - `/delegate --bg --goal <name>` prepends `goal:<name> | ` to the Agent View row's display name (writer: `bgDisplayName`)
+   - `claude-profiles goal list` reads `~/.claude/jobs/*/state.json`, parses the prefix back out (`parseGoalFromName`), groups by goal, prints `goal → N total · W working, B blocked, C completed`
+   - `claude-profiles goal show <name>` filters to one goal, lists each row (bg-id, state, profile + task)
+   - `--goal` without `--bg` is rejected by `delegate-launch.sh` (no Agent View row to tag in tmux mode)
+   - Goal-name validation rejects `|`, `:`, whitespace, leading/trailing space — shared by dispatcher and `goal show`
+   - Display-name format is a pinned roundtrip contract (constants `goalPrefix`, `goalDelim` in `delegate_bg.go`) with a Go unit test (`TestBgDisplayNameGoalRoundtrip`) and a fixture-based smoke (`scripts/smoke-goal.sh`)
+   - No changes to `result.md` or the hook
 
 3. **Atto II — Default flip + audit.** Flip `/delegate` default to `--bg`; old path behind `--legacy-tmux`. Audit consumers of `result.md` / `jsonl-path.txt` (one known: `cmdHookPromptSubmit`). Must come *after* (1).
 
