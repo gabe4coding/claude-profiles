@@ -2,10 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"time"
 )
+
+// agentsCommandTimeout bounds the `claude agents --json` subprocess so a
+// stuck daemon doesn't freeze the hub's tea.Tick refresh loop. 2s is
+// generous for a daemon read but short enough that a hang surfaces
+// quickly as a graceful-fallback miss rather than a UI freeze.
+const agentsCommandTimeout = 2 * time.Second
 
 // AgentInfo is a single row from `claude agents --json`.
 //
@@ -66,7 +74,9 @@ type agentLister interface {
 type realAgentLister struct{}
 
 func (realAgentLister) listAgents() ([]AgentInfo, error) {
-	cmd := exec.Command("claude", "agents", "--json")
+	ctx, cancel := context.WithTimeout(context.Background(), agentsCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "claude", "agents", "--json")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -92,11 +102,16 @@ func (realAgentLister) listAgents() ([]AgentInfo, error) {
 }
 
 // claudeAgentsJSON shells out to `claude agents --json` and returns the
-// parsed list of live sessions known to the Claude Code daemon. Returns
-// (nil, err) when the subprocess fails (e.g. `claude` not on PATH, or an
-// older version that doesn't support the flag). Callers that want
-// graceful degradation should treat any error as "no live session data
-// available" rather than a hard failure.
+// parsed list of live sessions known to the Claude Code daemon. Returns:
+//   - (agents, nil) on success — agents may be empty when no sessions are
+//     live, distinct from the error case below.
+//   - (nil, nil) when the daemon emits no/whitespace-only output (treat
+//     as "no live sessions known"; not an error).
+//   - (nil, err) when the subprocess fails (`claude` not on PATH, older
+//     version without the flag, daemon refused, or timeout after
+//     agentsCommandTimeout). Callers that want graceful degradation
+//     should treat any error as "no live session data available" rather
+//     than a hard failure.
 func claudeAgentsJSON() ([]AgentInfo, error) {
 	return realAgentLister{}.listAgents()
 }
