@@ -53,6 +53,12 @@ func ensureDistillProcedureFile() error {
 //
 // Other silent early-exits:
 //   - stop_hook_active=true: Claude has already done the work; let it stop.
+//   - background_tasks non-empty: bg delegates still in flight; their commits
+//     aren't landed yet, distilling now would advance the bookmark past work
+//     that wasn't captured. Skip without writing the bookmark so the next
+//     real commit retriggers us.
+//   - session_crons non-empty: cron-triggered turn, non-interactive work,
+//     distillation adds noise. Same no-bookmark-advance reasoning.
 //   - no wrapper context available (running outside `claude-profiles run`).
 //   - working tree shows only .claude/* changes: read-only / hook-tweak
 //     session, nothing useful to distill.
@@ -62,13 +68,21 @@ func cmdHookStop() {
 	}
 
 	var input struct {
-		SessionID      string `json:"session_id"`
-		StopHookActive bool   `json:"stop_hook_active"`
+		SessionID       string            `json:"session_id"`
+		StopHookActive  bool              `json:"stop_hook_active"`
+		BackgroundTasks []json.RawMessage `json:"background_tasks"`
+		SessionCrons    []json.RawMessage `json:"session_crons"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
 		return
 	}
 	if input.StopHookActive {
+		return
+	}
+	if len(input.BackgroundTasks) > 0 {
+		return
+	}
+	if len(input.SessionCrons) > 0 {
 		return
 	}
 
