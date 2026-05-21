@@ -58,7 +58,7 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 - Settings file for `--bg` lives at `<delegate-dir>/settings.json` (NOT `os.TempDir`). Cleanup is tied to the delegate dir lifecycle.
 - The `--bg` path does NOT pass `--worktree`: Claude Code's bg machinery auto-creates one under `.claude/worktrees/` with cleanup tied to `claude rm`. For profiles with `Worktree:true`, this is a behaviour change confined to the `--bg` path (no deterministic `delegate-<id>` name).
 
-## Pending enhancement specs (triaged 2026-05-20)
+## Pending enhancement specs (triaged 2026-05-20 / 2026-05-21)
 
 Originally triaged in [PR #11](https://github.com/gabe4coding/claude-profiles/pull/11). Status:
 
@@ -68,6 +68,9 @@ Originally triaged in [PR #11](https://github.com/gabe4coding/claude-profiles/pu
   - ✅ Step 1 (helper + interface + tests): `session_discovery.go` + `session_discovery_test.go`. Schema pinned by fixture-based test. Shipped in [PR #14](https://github.com/gabe4coding/claude-profiles/pull/14).
   - ⏳ Steps 2-3 (integration into `announceDelegateJSONLPath` and `cmdDelegateRunner` fallback): **coordinate with Atto III** — if Atto II ships first these target tmux code that's being deleted.
   - ✅ Step 4 (hub annotation): bg-only, 2-state `busy`/`idle` rollup via `bgStatusCounts`, `tea.Tick` 3s refresh, suffix `(N busy)` / `(N busy · M idle)` on the `● bg` marker. Graceful fallback when `agents --json` errors (no annotation, base marker unchanged). Cursor preserved across rebuilds so the 3s tick doesn't yank user selection. Shipped in [PR #15](https://github.com/gabe4coding/claude-profiles/pull/15).
+- ✅ **Issue #16** — bg delegate sessions now resumable via `/resume` (v2.1.144+). Fix: explicit `CLAUDE_PROFILES_DELEGATE=1` guard in `cmdHookStop` (prevents distill on original bg run); comment in `cmdDelegateBgDispatch` documenting the resumability contract (resumed sessions are unsupported — result.md is settled, watcher is gone). Shipped in PR on branch `claude/eloquent-carson-4PaUv`.
+- ✅ **Issue #17** — slash-command tasks in `--bg` dispatch rejected pre-v2.1.146. Fix: smoke test Step 5 for `/`-prefixed task, minimum version comment in `cmdDelegateBgDispatch`. Shipped in PR on branch `claude/eloquent-carson-4PaUv`.
+- ⏳ **Issue #18** — `SubagentModel` field in `ProfilePrefs` to inject `CLAUDE_CODE_SUBAGENT_MODEL` into bg delegate subprocess env (v2.1.146+ reliable). Spec: `docs/spec-issue-18-subagent-model.md`. Safe to implement any time after Atto I; target `cmdDelegateBgDispatch` only (not the tmux path). Key steps: (1) add field to `ProfilePrefs`, (2) hoist `loadProfilePrefs` in `cmdDelegateBgDispatch`, (3) inject env var, (4) preserve field in `saveProfileAt` round-trip, (5) extend smoke test with env injection assertion.
 
 ---
 

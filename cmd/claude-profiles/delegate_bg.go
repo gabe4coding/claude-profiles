@@ -195,6 +195,11 @@ func cmdDelegateBgDispatch(args []string) {
 	displayName := bgDisplayName(req.Profile, req.Task, req.Goal)
 	claudeArgs = append(claudeArgs, "--name", displayName)
 
+	// Minimum Claude Code version for --bg dispatch: v2.1.139 (--bg introduced).
+	// Slash-command / skill tasks (req.Task starting with "/") require v2.1.146+:
+	// earlier versions refused to launch a bg session whose only input was a
+	// skill invocation and returned a launch error that looked like a generic
+	// dispatch failure. Profile Tasks starting with "/" are valid since v2.1.146.
 	if req.Task != "" {
 		claudeArgs = append(claudeArgs, req.Task)
 	}
@@ -221,6 +226,13 @@ func cmdDelegateBgDispatch(args []string) {
 	if err := os.WriteFile(filepath.Join(dir, "bg-session-id.txt"), []byte(bgID), 0o644); err != nil {
 		fatal(fmt.Errorf("write bg-session-id.txt: %v", err))
 	}
+	// Resumability note (v2.1.144+): Claude Code's /resume picker now surfaces
+	// bg sessions alongside interactive ones. If a user /resume's this delegate
+	// after it completes, the resumed session is entirely unobserved by this
+	// codebase: the watcher has exited, result.md / delivered.md are already
+	// settled, and no new output is injected into the parent. /resume on a
+	// completed delegate is therefore unsupported — treat it as manual
+	// inspection only, with no expectation of result.md delivery.
 
 	if err := spawnBgWatcher(delegateID); err != nil {
 		// Watcher failed to start — write a result.md hint so the parent

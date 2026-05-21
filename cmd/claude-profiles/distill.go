@@ -66,6 +66,23 @@ func cmdHookStop() {
 	if os.Getenv("DISTILL_ON_STOP") == "0" {
 		return
 	}
+	// bg delegates are dispatched with CLAUDE_PROFILES_DELEGATE=1 in their env.
+	// Distilling on their behalf is wrong: they're headless sessions whose
+	// Stop is either the watcher calling `claude stop` or the user manually
+	// attaching. Bail out so we don't advance the parent profile's bookmark
+	// or emit a spurious decision:block inside the delegate session.
+	//
+	// Limitation: if a user /resume's a completed delegate from inside a
+	// claude-profiles run context, the resumed process won't carry
+	// CLAUDE_PROFILES_DELEGATE=1 (it was only set in the original subprocess
+	// env). The wrapperContextForHook / profileID-empty guard below handles
+	// most resumed cases, but if the wrapper PID is still live the parent's
+	// profile could be resolved. The result.md contract is explicitly not
+	// extended to resumed delegate sessions — treat /resume'd delegates as
+	// read-only inspection, not as a new managed delegation.
+	if os.Getenv("CLAUDE_PROFILES_DELEGATE") == "1" {
+		return
+	}
 
 	var input struct {
 		SessionID       string            `json:"session_id"`
