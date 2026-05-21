@@ -30,16 +30,18 @@ import (
 //      context, and renames them to delivered.md so they're not re-injected.
 
 const delegateLaunchScript = `#!/bin/bash
-# Usage: delegate-launch.sh <profile-id> [--bg] [--dir <path>] [--goal <name>] <task...>
+# Usage: delegate-launch.sh <profile-id> [--legacy-tmux] [--dir <path>] [--goal <name>] <task...>
 # Sets up a /delegate request and dispatches the delegate. Two modes:
 #
-#   tmux mode (default): spawn the delegate in a new tmux window via
-#     ` + "`claude-profiles _delegate-runner`" + `. Prints DELEGATE_ID, DELEGATE_WINDOW,
-#     DELEGATE_RESULT, DELEGATE_DIR, DELEGATE_JSONL.
-#
-#   bg mode (--bg): dispatch via ` + "`claude --bg`" + ` and rely on Agent View's
+#   bg mode (default): dispatch via ` + "`claude --bg`" + ` and rely on Agent View's
 #     supervisor. Prints DELEGATE_ID, DELEGATE_BG_ID, DELEGATE_BG_NAME,
-#     DELEGATE_RESULT, DELEGATE_DIR. No DELEGATE_WINDOW / DELEGATE_JSONL.
+#     DELEGATE_RESULT, DELEGATE_DIR. No tmux required.
+#
+#   legacy tmux mode (--legacy-tmux): spawn the delegate in a new tmux window
+#     via ` + "`claude-profiles _delegate-runner`" + `. Prints DELEGATE_ID,
+#     DELEGATE_WINDOW, DELEGATE_RESULT, DELEGATE_DIR, DELEGATE_JSONL.
+#     Slated for demolition in Atto III — kept temporarily for users who need
+#     live progress streaming via Monitor.
 
 set -e
 
@@ -49,17 +51,26 @@ if [ -z "$CLAUDE_PROFILES_WRAPPER_PID" ]; then echo "/delegate cannot find the w
 PROFILE="$1"; shift
 
 # Optional leading flags, in any order:
-#   --bg            dispatch via claude --bg (Agent View), no tmux required
+#   --legacy-tmux   opt out of the default bg path; spawn the delegate in a
+#                   tmux window via the legacy runner (requires $TMUX)
 #   --dir <path>    resolve to absolute now, while we still have the parent's cwd
 #   --goal <name>   tag the bg session for grouping via ` + "`claude-profiles goal`" + `
-#                   (requires --bg; rejected otherwise)
-BG_MODE=""
+#                   (incompatible with --legacy-tmux — Agent View only)
+LEGACY_TMUX=""
 REPO_DIR=""
 GOAL_NAME=""
 while true; do
   case "${1:-}" in
     --bg)
-      BG_MODE=1
+      # Atto II: bg is the default; the flag itself is gone. Be loud so
+      # users who carry --bg from older scripts learn about the flip
+      # instead of silently inheriting the new default and being surprised
+      # when --legacy-tmux is needed for the old behaviour.
+      echo "/delegate: --bg is no longer accepted; bg is the default. Drop the flag, or pass --legacy-tmux for the old tmux path." >&2
+      exit 2
+      ;;
+    --legacy-tmux)
+      LEGACY_TMUX=1
       shift
       ;;
     --dir)
@@ -78,27 +89,35 @@ while true; do
   esac
 done
 
-# Honour the env-var form too: lets users default the whole hub to bg mode.
-if [ "${CLAUDE_PROFILES_DELEGATE_BG:-}" = "1" ]; then
-  BG_MODE=1
+# Clean break with Atto I's opt-in env var. Refusing it loudly is safer
+# than silently dropping it — users with this exported in their shell rc
+# would otherwise keep the old name long after it stopped doing anything.
+if [ -n "${CLAUDE_PROFILES_DELEGATE_BG:-}" ]; then
+  echo "/delegate: CLAUDE_PROFILES_DELEGATE_BG is no longer honoured; bg is the default. Use CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1 to default to the legacy tmux path." >&2
+  exit 2
 fi
 
-# tmux mode still requires tmux. bg mode does not — that's its whole point.
-if [ -z "$BG_MODE" ] && [ -z "$TMUX" ]; then
-  echo "/delegate requires tmux. Run claude-profiles inside a tmux session, or pass --bg." >&2
+# Env-var form of --legacy-tmux: lets users opt the whole hub back to the
+# legacy path without retyping the flag each time.
+if [ "${CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX:-}" = "1" ]; then
+  LEGACY_TMUX=1
+fi
+
+# Legacy tmux path still requires tmux. Default bg path does not.
+if [ -n "$LEGACY_TMUX" ] && [ -z "$TMUX" ]; then
+  echo "/delegate --legacy-tmux requires tmux. Run claude-profiles inside a tmux session, or drop --legacy-tmux to use the default bg path." >&2
   exit 1
 fi
 
-# --goal only affects the Agent View row's display name; tmux mode has no
-# row to tag. Reject loudly so users don't think a typo'd --bg silently
-# worked.
-if [ -n "$GOAL_NAME" ] && [ -z "$BG_MODE" ]; then
-  echo "/delegate --goal requires --bg (the goal grouping only exists for Agent View bg sessions)." >&2
+# --goal only affects the Agent View row's display name; the legacy tmux
+# path has no row to tag.
+if [ -n "$GOAL_NAME" ] && [ -n "$LEGACY_TMUX" ]; then
+  echo "/delegate --goal is incompatible with --legacy-tmux (the goal grouping only exists for Agent View bg sessions)." >&2
   exit 1
 fi
 
 TASK="$*"
-if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--bg] [--dir <path>] [--goal <name>] <task...>" >&2; exit 1; fi
+if [ -z "$PROFILE" ] || [ -z "$TASK" ]; then echo "usage: delegate-launch.sh <profile> [--legacy-tmux] [--dir <path>] [--goal <name>] <task...>" >&2; exit 1; fi
 
 PARENT_SID=$(jq -r '.session_id // empty' "$HOME/.claude-profiles/run/${CLAUDE_PROFILES_WRAPPER_PID}.json" 2>/dev/null)
 if [ -z "$PARENT_SID" ]; then echo "/delegate cannot find the parent session id yet — wait a few seconds and retry." >&2; exit 1; fi
@@ -120,15 +139,17 @@ echo "DELEGATE_ID=$DELG_ID"
 echo "DELEGATE_RESULT=$DIR/result.md"
 echo "DELEGATE_DIR=$DIR"
 
-if [ -n "$BG_MODE" ]; then
-  # Hand off to Go: it reads request.json, builds the claude --bg
-  # invocation from the profile flags, captures the short id, spawns the
-  # bg state watcher, and prints DELEGATE_BG_ID / DELEGATE_BG_NAME.
+if [ -z "$LEGACY_TMUX" ]; then
+  # Default path: hand off to Go's bg dispatcher. It reads request.json,
+  # builds the claude --bg invocation from the profile flags, captures
+  # the short id, spawns the bg state watcher, and prints DELEGATE_BG_ID
+  # / DELEGATE_BG_NAME.
   claude-profiles _delegate-bg-dispatch "$DELG_ID"
   exit 0
 fi
 
-# tmux path (default): spawn the delegate's claude in a detached window.
+# Legacy tmux path (--legacy-tmux): spawn the delegate's claude in a
+# detached tmux window. Slated for demolition in Atto III.
 tmux new-window -d -n "delegate-$DELG_ID" "claude-profiles _delegate-runner $DELG_ID"
 echo "DELEGATE_WINDOW=delegate-$DELG_ID"
 
@@ -277,8 +298,8 @@ fi
 `
 
 const delegateSlashCommand = `---
-description: Delegate an interactive subtask to another profile. Default mode opens a tmux window and streams progress live; --bg mode dispatches via Claude Code Agent View (claude --bg) and the result is delivered on your next prompt via the UserPromptSubmit hook.
-argument-hint: <profile-id|intent> [--bg] [--dir <path>] [--goal <name>] [task...]
+description: Delegate an interactive subtask to another profile. Default mode dispatches via Claude Code Agent View (claude --bg) and the result is delivered on your next prompt via the UserPromptSubmit hook. --legacy-tmux opens a tmux window and streams progress live (slated for removal in Atto III).
+argument-hint: <profile-id|intent> [--legacy-tmux] [--dir <path>] [--goal <name>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
 The user typed ` + "`/delegate $ARGUMENTS`" + `.
@@ -287,22 +308,38 @@ The user typed ` + "`/delegate $ARGUMENTS`" + `.
 
 Parse $ARGUMENTS:
 - First whitespace-separated token = profile selector (free-form intent → classify against Available profiles list).
-- ` + "`--bg`" + ` (anywhere among the leading flags) selects bg mode: the delegate dispatches via ` + "`claude --bg`" + ` and shows up in Agent View. No live progress; the result is delivered on the user's NEXT prompt via the UserPromptSubmit hook. Consume the token.
+- ` + "`--legacy-tmux`" + ` (anywhere among the leading flags) opts out of the default bg path and spawns the delegate in a tmux window via the legacy runner. Requires ` + "`$TMUX`" + ` in the environment. Slated for removal in Atto III — only use it when you need live progress streaming via Monitor. Consume the token.
 - ` + "`--dir <path>`" + ` (anywhere among the leading flags) is the target working directory; consume both tokens.
-- ` + "`--goal <name>`" + ` (anywhere among the leading flags) tags the bg session with a goal label so ` + "`claude-profiles goal list`" + ` can group it later. **Requires --bg.** The name cannot contain ` + "`|`" + `, ` + "`:`" + `, or whitespace; pick a short kebab-case label (e.g. ` + "`refactor-auth`" + `). Consume both tokens.
+- ` + "`--goal <name>`" + ` (anywhere among the leading flags) tags the bg session with a goal label so ` + "`claude-profiles goal list`" + ` can group it later. **Incompatible with --legacy-tmux.** The name cannot contain ` + "`|`" + `, ` + "`:`" + `, or whitespace; pick a short kebab-case label (e.g. ` + "`refactor-auth`" + `). Consume both tokens.
+- ` + "`--bg`" + ` is no longer accepted (bg is now the default); the launch script will reject it loudly.
 - Everything remaining = task body.
 
 If profile or task is empty, ask the user with AskUserQuestion.
 
 # 2. Launch
 
-Call the Bash tool, synchronously. Pass ` + "`--bg`" + `, ` + "`--dir <path>`" + ` and/or ` + "`--goal <name>`" + ` through to the script in the same order they appeared:
+Call the Bash tool, synchronously. Pass ` + "`--legacy-tmux`" + `, ` + "`--dir <path>`" + ` and/or ` + "`--goal <name>`" + ` through to the script in the same order they appeared:
 
-  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--bg] [--dir "<path>"] [--goal "<name>"] "<task body...>"
+  "${CLAUDE_PLUGIN_ROOT}/scripts/delegate-launch.sh" "<profile-id>" [--legacy-tmux] [--dir "<path>"] [--goal "<name>"] "<task body...>"
 
 That script does all the bookkeeping (request file, dispatch, env guards). Output depends on mode.
 
-## tmux mode (default — no --bg flag)
+## Default mode (bg — no flag)
+
+  DELEGATE_ID=<id>
+  DELEGATE_RESULT=<path to result.md>
+  DELEGATE_DIR=<delegate dir>
+  DELEGATE_BG_ID=<8-char Agent View session id>
+  DELEGATE_BG_NAME=[goal:<name> | ]<profile>: <truncated-task>
+
+The delegate is already running in the background. **Skip Steps 3-5 entirely** — there is no live watcher subprocess to monitor. Tell the user in 1-2 short lines:
+
+  - which profile + task, and the Agent View id
+  - that the result will be delivered on their next prompt (or they can run ` + "`claude attach <DELEGATE_BG_ID>`" + ` to interact directly, or open ` + "`claude agents`" + ` for the full dashboard)
+
+Then go back to whatever the user was working on. Do NOT call delegate-watch.sh in this mode.
+
+## Legacy tmux mode (--legacy-tmux flag)
 
   DELEGATE_ID=<id>
   DELEGATE_RESULT=<path to result.md>
@@ -312,22 +349,7 @@ That script does all the bookkeeping (request file, dispatch, env guards). Outpu
 
 Read them out of the script's output and remember the id and the result path. Continue with Step 3 (live watch).
 
-## bg mode (--bg flag)
-
-  DELEGATE_ID=<id>
-  DELEGATE_RESULT=<path to result.md>
-  DELEGATE_DIR=<delegate dir>
-  DELEGATE_BG_ID=<8-char Agent View session id>
-  DELEGATE_BG_NAME=[goal:<name> | ]<profile>: <truncated-task>
-
-The delegate is already running in the background. **Skip Step 3 entirely** — there is no live watcher subprocess to monitor. Tell the user in 1-2 short lines:
-
-  - which profile + task, and the Agent View id
-  - that the result will be delivered on their next prompt (or they can run ` + "`claude attach <DELEGATE_BG_ID>`" + ` to interact directly, or open ` + "`claude agents`" + ` for the full dashboard)
-
-Then go back to whatever the user was working on. Do NOT call delegate-watch.sh in bg mode.
-
-# 3. Stream progress (tmux mode only — skip in bg mode; skip if DELEGATE_JSONL was empty)
+# 3. Stream progress (legacy tmux mode only — skip in default bg mode; skip if DELEGATE_JSONL was empty)
 
 Call the Bash tool a SECOND time with run_in_background=true:
 
@@ -341,7 +363,7 @@ Capture the returned task-id (call it $WATCH_TASK). Then call the Monitor tool o
 
 Echo each summary line to the user (one short message per notification, no commentary unless something interesting happened).
 
-# 4. Stop conditions — LET THE WATCHER EXIT ON ITS OWN
+# 4. Stop conditions — LET THE WATCHER EXIT ON ITS OWN (legacy tmux mode only)
 
 The watcher emits one of four kinds of line; treat each accordingly.
 
@@ -360,7 +382,7 @@ DO NOT call TaskStop on the watcher mid-stream just because the delegate "looks 
 
 DO NOT read the delegate's .jsonl yourself to construct a result — read DELEGATE_RESULT (the result.md the runner wrote). Reading the .jsonl directly would force you to re-derive the last assistant message, which is brittle.
 
-# 5. Cleanup (after ` + "`✓ done`" + `, ` + "`✗ abandoning`" + `, or user-requested abort)
+# 5. Cleanup (legacy tmux mode only, after ` + "`✓ done`" + `, ` + "`✗ abandoning`" + `, or user-requested abort)
 
 Always reap the watcher when you stop monitoring it:
 
@@ -370,7 +392,7 @@ The delegate's tmux window is killed automatically (by the runner on ` + "`✓`"
 
 # 6. Acknowledge
 
-One or two short lines to the user up front: which profile, what task, the delegate id and tmux window name. If DELEGATE_JSONL was empty, mention that live progress isn't available — the final result will still arrive when the watcher reports done (you'll Read DELEGATE_RESULT at that point).
+One or two short lines to the user up front: which profile, what task, and the delegate id (plus DELEGATE_BG_ID in default mode, or DELEGATE_WINDOW in legacy mode). In legacy mode, if DELEGATE_JSONL was empty, mention that live progress isn't available — the final result will still arrive when the watcher reports done (you'll Read DELEGATE_RESULT at that point).
 
 You can keep helping with the main task while the delegate runs.
 `
