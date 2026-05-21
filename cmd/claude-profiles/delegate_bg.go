@@ -513,7 +513,7 @@ func stopBgSession(bgID string, logf func(string, ...any)) {
 // The CLI prints `backgrounded · <id>` as the first line; we tolerate
 // whitespace and surrounding lines.
 func parseBackgroundedID(out string) string {
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		const prefix = "backgrounded"
 		if !strings.HasPrefix(line, prefix) {

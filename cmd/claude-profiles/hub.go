@@ -755,10 +755,7 @@ func (m *hubModel) resizeListForLayout() {
 		return
 	}
 	// padding(1) + title(1) + input-box(3) + spacer(1) + footer(1) = 7 overhead
-	listH := m.height - 7
-	if listH < 4 {
-		listH = 4
-	}
+	listH := max(m.height-7, 4)
 	m.list.SetSize(m.listWidth(), listH)
 }
 
@@ -767,14 +764,8 @@ func (m *hubModel) resizeListForLayout() {
 // that `show <profile>` would print.
 func (m hubModel) renderDetailPane() string {
 	id := m.selectedID()
-	width := m.width - m.listWidth() - 2 // 2 cols for the border
-	if width < 20 {
-		width = 20
-	}
-	listH := m.height - 7
-	if listH < 4 {
-		listH = 4
-	}
+	width := max(m.width-m.listWidth()-2, 20) // 2 cols for the border
+	listH := max(m.height-7, 4)
 	contentH := listH - 2 // border eats 2 rows
 
 	var body string
@@ -801,7 +792,7 @@ func clampToBox(s string, w, h int) string {
 		return s
 	}
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		out = append(out, wrapLine(line, w)...)
 		if len(out) >= h {
 			break
@@ -821,13 +812,14 @@ func wrapLine(line string, w int) []string {
 	if len(line) <= w {
 		return []string{line}
 	}
-	indent := ""
+	var indentBuilder strings.Builder
 	for _, r := range line {
 		if r != ' ' && r != '\t' {
 			break
 		}
-		indent += string(r)
+		indentBuilder.WriteRune(r)
 	}
+	indent := indentBuilder.String()
 	if len(indent) >= w {
 		// Pathological indent vs width — fall back to a hard cut to avoid
 		// infinite-loop wrap.
@@ -1188,10 +1180,7 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 
 	displayID := loc.QualifiedID
 	if sectionRepoAlias != "" {
-		prefix := sectionRepoAlias + "/"
-		if strings.HasPrefix(displayID, prefix) {
-			displayID = strings.TrimPrefix(displayID, prefix)
-		}
+		displayID = strings.TrimPrefix(displayID, sectionRepoAlias+"/")
 	}
 
 	pinStyle := lipgloss.NewStyle().Foreground(cdsAmber).Bold(true)

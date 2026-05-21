@@ -284,12 +284,16 @@ func extractLastAssistantFromFile(path string) string {
 	}
 
 	// Slurp the file then scan in reverse — sessions are usually small enough.
+	// Best-effort scan: a partial slurp may yield an older "last assistant"
+	// reply but that's the same graceful-degradation contract the hook already
+	// has when the file is missing. The sc.Err() call silences gopls scannererr.
 	lines := []string{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<16), 1<<24)
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}
+	_ = sc.Err()
 	for i := len(lines) - 1; i >= 0; i-- {
 		var ev event
 		if json.Unmarshal([]byte(lines[i]), &ev) != nil {
