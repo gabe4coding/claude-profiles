@@ -24,7 +24,12 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 
 ## Open items (in priority order)
 
-1. **Real-world validation of Atto I.** Smoke uses a stub `claude`. Before flipping defaults we want a human to actually dispatch a few `--bg` delegates and confirm: state.json shape stable, distill Stop hook actually fires under `--bg`, parent hook delivers result.md content end-to-end.
+1. ✅ **Real-world validation of Atto I — DONE** (2026-05-21, session manual dispatch via `/delegate --bg general-purpose --dir <repo>`).
+   - `state.json` shape stable: all `bgJobState` fields present (`state`, `linkScanPath`, `sessionId`, `daemonShort`, `name`, `intent`, `detail`), extras (`tempo`, `output.result`, `template`, `respawnFlags`, `cliVersion`, `cwd`, `nameSource`, `resumeSessionId`, `backend`, timestamps) ignored by Go decoder. Observed `cliVersion: 2.1.146`.
+   - State transitioned directly to `"done"` (skipped `"blocked"`); PR #13's `isBgFirstTurnDone` fix verified — watcher accepted it as terminal.
+   - Watcher lifecycle clean: t+0 watch, t+4s `wrote result.md (len=29)`, t+5s `claude stop ok` (slot freed).
+   - Distill Stop hook correctly **suppressed** under `--bg`: 0 distill events / 0 stop hook events in the delegate's JSONL. Mechanism here was `sessionHasCommittedNonClaudeWork` bailing early because the delegate didn't commit anything — NOT PR #12's `background_tasks`/`session_crons` guards (those protect the *parent* when it has bg children, not the delegate itself). PR #19's `CLAUDE_PROFILES_DELEGATE=1` env guard in `cmdHookStop` (merged 2026-05-21 as `8312604`) is the robust delegate-side protection for delegates that *do* commit work.
+   - Parent `UserPromptSubmit` hook delivered `result.md` content as `additionalContext` on next prompt and renamed → `delivered.md`. Confirmed for both a successful delegate and an `OwnerRepo`-rejected one — rejection message rides the same `result.md` channel (the dispatcher writes it via `writeDelegateResult` before fatal). Useful contract to remember for Atto III's redesign.
 
 2. **Atto I.5 — SHIPPED** (draft PR on branch `claude/atto-i5-goal-d6fc3a7c`).
    - `/delegate --bg --goal <name>` prepends `goal:<name> | ` to the Agent View row's display name (writer: `bgDisplayName`)
@@ -35,19 +40,27 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
    - Display-name format is a pinned roundtrip contract (constants `goalPrefix`, `goalDelim` in `delegate_bg.go`) with a Go unit test (`TestBgDisplayNameGoalRoundtrip`) and a fixture-based smoke (`scripts/smoke-goal.sh`)
    - No changes to `result.md` or the hook
 
-3. **Atto II — Default flip + audit.** Flip `/delegate` default to `--bg`; old path behind `--legacy-tmux`. Audit consumers of `result.md` / `jsonl-path.txt` (one known: `cmdHookPromptSubmit`). Must come *after* (1).
+3. **Atto II — Default flip + audit — SHIPPED** in [PR #20](https://github.com/gabe4coding/claude-profiles/pull/20) (draft).
+   - `/delegate` default flipped to `--bg`; legacy tmux behind `--legacy-tmux` (env: `CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1`).
+   - Clean break with Atto I's opt-in: `--bg` and `CLAUDE_PROFILES_DELEGATE_BG` rejected loudly with migration message.
+   - `--goal` constraint inverted: was "requires --bg", now "incompatible with --legacy-tmux".
+   - Slash command markdown rewritten bg-first; legacy tmux mode explicitly scoped to opt-in only.
+   - Audit doc `docs/audit-atto-iii.md` lists every consumer of `result.md` and `jsonl-path.txt` plus the redesign sketch for Atto III. Also notes PR #19's bg-only invariants Atto III must preserve.
+   - New smoke `scripts/smoke-delegate-flags.sh` covers the bash flag-handling paths (rejection of `--bg`, `CLAUDE_PROFILES_DELEGATE_BG`, `--legacy-tmux` outside tmux, `--goal` with `--legacy-tmux`, default path, env-var legacy opt-in).
+   - New hidden subcommand `_install-wrapper-plugin` installs `commands/` + `scripts/` without starting a session (used by the flag smoke).
 
-4. **Atto III — Demolition.** Delete tmux runner (`cmdDelegateRunner`, `writeResultOnFirstTurnComplete`, post-run fallback), `result.md` as integration point, `jsonl-path.txt`, `OwnerRepo` enforcement at dispatch (keep as hub hint only), `delegate-<id>` worktree naming. Redesign parent ↔ delegate handoff to read `~/.claude/jobs/<id>/state.json` directly from the hook.
+4. **Atto III — Demolition.** Delete tmux runner (`cmdDelegateRunner`, `writeResultOnFirstTurnComplete`, post-run fallback), `result.md` as integration point, `jsonl-path.txt`, `OwnerRepo` enforcement at dispatch (keep as hub hint only), `delegate-<id>` worktree naming. Redesign parent ↔ delegate handoff to read `~/.claude/jobs/<id>/state.json` directly from the hook. **Pre-read `docs/audit-atto-iii.md`** before starting — it has the full consumer map, redesign sketch, and PR #19 invariants to preserve.
 
 ## How to resume
 
 1. Confirm PR #4 status (`mcp__github__pull_request_read --method get`).
 2. Ask the user which Atto / open item to pick up.
 3. Branch naming: `claude/<short-handle>-XXXX` off latest `main`.
-4. Run all three smoke tests before pushing:
-   - `./scripts/smoke-delegate-bg.sh` (new)
-   - `./scripts/smoke-distill.sh` (existing, guards distill Stop hook)
-   - `./scripts/smoke-ui.sh` (Go unit tests)
+4. Run all four smoke tests before pushing:
+   - `./scripts/smoke-delegate-bg.sh` (dispatcher + watcher end-to-end)
+   - `./scripts/smoke-delegate-flags.sh` (bash flag handling — Atto II rejection paths)
+   - `./scripts/smoke-distill.sh` (guards distill Stop hook)
+   - `./scripts/smoke-ui.sh` (Go unit tests — note: `TestHubFilterByTyping` is a pre-existing flake on `main`)
 5. Always create the PR as **draft**.
 
 ## Hot spots not to forget

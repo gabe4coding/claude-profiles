@@ -98,6 +98,16 @@ func main() {
 		cmdDelegateBgDispatch(args[1:])
 	case "_delegate-bg-watcher":
 		cmdDelegateBgWatcher(args[1:])
+	case "_install-wrapper-plugin":
+		// Testing hook: install the wrapper plugin's commands/ + scripts/
+		// without starting a full claude-profiles run session. Used by
+		// scripts/smoke-delegate-flags.sh to get the current
+		// delegateLaunchScript content on disk under the wrapper plugin
+		// dir before exercising the bash flag-handling paths.
+		if err := ensureHandoffSlashCommand(); err != nil {
+			fatal(err)
+		}
+		return
 	case "doctor":
 		cmdDoctor()
 	case "analytics", "stats":

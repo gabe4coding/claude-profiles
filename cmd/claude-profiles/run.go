@@ -546,11 +546,11 @@ func ensureHandoffSlashCommand() error {
 	commands := []struct{ name, body string }{
 		{"handoff.md", handoffSlashCommand},
 		{"generate.md", generateSlashCommand},
-		// /delegate is installed unconditionally: the legacy path needs
-		// tmux, but the --bg path dispatches via `claude --bg` and has no
-		// tmux dependency. The launch script itself enforces the right
-		// mode at call time (rejecting --no-bg invocations without $TMUX
-		// with a clear "pass --bg or run inside tmux" message).
+		// /delegate is installed unconditionally: the default bg path
+		// dispatches via `claude --bg` and has no tmux dependency. The
+		// opt-in --legacy-tmux path still needs tmux; the launch script
+		// rejects --legacy-tmux invocations without $TMUX with a clear
+		// "run inside tmux or drop --legacy-tmux" message.
 		{"delegate.md", delegateSlashCommand},
 	}
 	for _, sc := range commands {
