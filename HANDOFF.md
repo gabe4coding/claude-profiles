@@ -24,7 +24,12 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
 
 ## Open items (in priority order)
 
-1. **Real-world validation of Atto I.** Smoke uses a stub `claude`. Before flipping defaults we want a human to actually dispatch a few `--bg` delegates and confirm: state.json shape stable, distill Stop hook actually fires under `--bg`, parent hook delivers result.md content end-to-end.
+1. ✅ **Real-world validation of Atto I — DONE** (2026-05-21, session manual dispatch via `/delegate --bg general-purpose --dir <repo>`).
+   - `state.json` shape stable: all `bgJobState` fields present (`state`, `linkScanPath`, `sessionId`, `daemonShort`, `name`, `intent`, `detail`), extras (`tempo`, `output.result`, `template`, `respawnFlags`, `cliVersion`, `cwd`, `nameSource`, `resumeSessionId`, `backend`, timestamps) ignored by Go decoder. Observed `cliVersion: 2.1.146`.
+   - State transitioned directly to `"done"` (skipped `"blocked"`); PR #13's `isBgFirstTurnDone` fix verified — watcher accepted it as terminal.
+   - Watcher lifecycle clean: t+0 watch, t+4s `wrote result.md (len=29)`, t+5s `claude stop ok` (slot freed).
+   - Distill Stop hook correctly **suppressed** under `--bg` (PR #12 guard): 0 distill events / 0 stop hook events in the delegate's JSONL.
+   - Parent `UserPromptSubmit` hook delivered `result.md` content as `additionalContext` on next prompt and renamed → `delivered.md`. Confirmed for both a successful delegate and an `OwnerRepo`-rejected one — rejection message rides the same `result.md` channel (the dispatcher writes it via `writeDelegateResult` before fatal). Useful contract to remember for Atto III's redesign.
 
 2. **Atto I.5 — SHIPPED** (draft PR on branch `claude/atto-i5-goal-d6fc3a7c`).
    - `/delegate --bg --goal <name>` prepends `goal:<name> | ` to the Agent View row's display name (writer: `bgDisplayName`)
