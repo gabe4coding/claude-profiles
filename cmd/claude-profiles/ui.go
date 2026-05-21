@@ -813,6 +813,12 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 	}
 	distillLabel := fmt.Sprintf("Session distillation: %s (record findings to CLAUDE.md / rules at session end)", distillState)
 
+	subagentState := "—"
+	if p.SubagentModel != "" {
+		subagentState = shortModelLabel(p.SubagentModel)
+	}
+	subagentLabel := fmt.Sprintf("Subagent model: %s (pins model for subagents spawned inside /delegate bg sessions)", subagentState)
+
 	kinds := profilePluginKinds(loc)
 	pluginSummary := "none"
 	if len(kinds) > 0 {
@@ -830,6 +836,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(worktreeLabel, "worktree"),
 			huh.NewOption(distillLabel, "distill"),
+			huh.NewOption(subagentLabel, "subagent_model"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(settingsLabel, "settings"),
 			huh.NewOption("Open user settings in $EDITOR", "editor"),
@@ -842,6 +849,7 @@ func pickEditAction(loc ProfileLocation, p *Profile) string {
 			huh.NewOption(isolatedLabel, "isolated"),
 			huh.NewOption(worktreeLabel, "worktree"),
 			huh.NewOption(distillLabel, "distill"),
+			huh.NewOption(subagentLabel, "subagent_model"),
 			huh.NewOption(promptsLabel, "prompts"),
 			huh.NewOption(pluginLabel, "plugin"),
 			huh.NewOption("Open profile folder in $EDITOR", "editor"),
@@ -1151,4 +1159,56 @@ func promptAction(p *Profile, idx int) bool {
 		return true
 	}
 	return false
+}
+
+// shortModelLabel returns a compact display label for a Claude Code model id.
+// Long ids (claude-haiku-4-5-20251001) become "haiku" so the edit menu and
+// hub tags stay readable. Falls back to the raw id if no canonical family
+// matches — that way custom / future models still render correctly.
+func shortModelLabel(model string) string {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "haiku"):
+		return "haiku"
+	case strings.Contains(m, "sonnet"):
+		return "sonnet"
+	case strings.Contains(m, "opus"):
+		return "opus"
+	}
+	return model
+}
+
+// pickSubagentModel prompts the user to choose a model for SubagentModel.
+// Four canonical families plus a "clear" sentinel that unsets the field.
+// Returns the picked model id (or "" for clear / abort) and whether the
+// caller should persist the value.
+func pickSubagentModel(current string) (string, bool) {
+	const (
+		idHaiku  = "claude-haiku-4-5-20251001"
+		idSonnet = "claude-sonnet-4-6"
+		idOpus   = "claude-opus-4-7"
+		clear    = "__clear__"
+	)
+	choice := current
+	if choice == "" {
+		choice = idHaiku
+	}
+	err := runField(huh.NewSelect[string]().
+		Title("Subagent model — used by subagents spawned inside /delegate bg sessions").
+		Description("Requires Claude Code v2.1.146+. Clear to fall back to whatever the delegate decides.").
+		Options(
+			huh.NewOption("Haiku (claude-haiku-4-5-20251001) — fast / cheap", idHaiku),
+			huh.NewOption("Sonnet (claude-sonnet-4-6) — balanced", idSonnet),
+			huh.NewOption("Opus (claude-opus-4-7) — most capable", idOpus),
+			huh.NewOption("Clear (unset — let the delegate decide)", clear),
+		).
+		Value(&choice))
+	if err != nil {
+		// Esc / abort — keep current value unchanged.
+		return current, false
+	}
+	if choice == clear {
+		return "", true
+	}
+	return choice, true
 }

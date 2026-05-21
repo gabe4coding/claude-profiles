@@ -691,14 +691,15 @@ func runEditMenu(loc ProfileLocation) {
 		saveFn = func(p *Profile) error {
 			existingPrefs := loadProfilePrefs(dir)
 			return saveProfilePrefs(dir, ProfilePrefs{
-				Description: p.Description,
-				Isolated:    p.Isolated,
-				Disabled:    existingPrefs.Disabled,
-				Worktree:    p.Worktree,
-				Prompts:     p.Prompts,
-				Cwd:         p.Cwd,
-				Settings:    p.Settings,
-				Distill:     p.Distill,
+				Description:   p.Description,
+				Isolated:      p.Isolated,
+				Disabled:      existingPrefs.Disabled,
+				Worktree:      p.Worktree,
+				Prompts:       p.Prompts,
+				Cwd:           p.Cwd,
+				Settings:      p.Settings,
+				Distill:       p.Distill,
+				SubagentModel: p.SubagentModel,
 			})
 		}
 	} else {
@@ -757,6 +758,20 @@ func runEditMenu(loc ProfileLocation) {
 				fatal(err)
 			}
 			info("Session distillation is now %s.", p.Distill)
+		case "subagent_model":
+			newModel, ok := pickSubagentModel(p.SubagentModel)
+			if !ok {
+				break
+			}
+			p.SubagentModel = newModel
+			if err := saveFn(p); err != nil {
+				fatal(err)
+			}
+			if p.SubagentModel == "" {
+				info("Subagent model cleared.")
+			} else {
+				info("Subagent model is now %s.", shortModelLabel(p.SubagentModel))
+			}
 		case "prompts":
 			managePrompts(p, loc, saveFn)
 		case "plugin":
