@@ -168,21 +168,58 @@ Then go back to whatever the user was working on. Do NOT read the delegate's sta
 
 The bg-only protocol is intentionally headless: the result lands on the next prompt and that's enough for almost every use case. **Skip this section unless the user specifically asks to watch the delegate's tools fire as they happen** (long-running orchestrators, debugging a delegate that's behaving oddly, watching for a stuck MCP call).
 
-If they do, you can stream digest lines using a helper subcommand + ` + "`Monitor`" + `:
+If they do, resolve the JSONL once and then pick a filter level by how much noise the user wants:
 
 ` + "```bash" + `
 JSONL=$(claude-profiles _delegate-jsonl "<DELEGATE_ID>")  # blocks up to 30s waiting for state.linkScanPath
+` + "```" + `
+
+## Filter levels (compose your own jq, these are starting points)
+
+**Level 0 — silent** — one line per delegate (the final reply text only). Use when the user wants confirmation it's still alive but no commentary.
+
+` + "```bash" + `
 tail -F "$JSONL" | jq -r --unbuffered '
-  select(.type == "assistant") |
-  .message.content[]? |
-  select(.type == "tool_use") |
-  "🔧 \(.name)"
+  select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text
 '
 ` + "```" + `
 
-Run that pipeline via the ` + "`Bash`" + ` tool with ` + "`run_in_background=true`" + `, capture the task id, and hand it to ` + "`Monitor`" + `. Each ` + "`tool_use`" + ` line becomes one Monitor notification. Echo notable lines back to the user. Stop the task with ` + "`TaskStop`" + ` once the parent hook has delivered the result on the next prompt — there's no built-in terminal signal in this recipe, so it's a "watch until you're done watching" pattern, not "watch until delegate completes". Filter further with ` + "`jq`" + ` if the user wants thinking / text events too.
+**Level 1 — terse** — one line per tool call (name only). Default level: tells the user *what* the delegate is doing without flooding the chat.
 
-` + "`_delegate-jsonl`" + ` is a pure read: it polls until the supervisor materialises the JSONL and never writes inside the delegate dir. If the dispatcher already failed (` + "`dispatch-error.md`" + ` exists) it exits non-zero with a useful stderr message instead of polling forever.
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | "🔧 \(.name)"
+'
+` + "```" + `
+
+**Level 2 — verbose** — text replies and tool calls with a snippet of the first argument. Use when the user is debugging a delegate or wants to see reasoning interleaved with tool firing.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? |
+  (select(.type=="text")     | "💬 \(.text[0:120])"),
+  (select(.type=="tool_use") | "🔧 \(.name) \((.input | to_entries[0].value // "") | tostring | .[0:60])")
+'
+` + "```" + `
+
+**Level 3 — filtered** — only specific tools. Use when the user is watching for something specific (slow Bash, repeated Read on the same file, etc.). Replace the ` + "`select(.name==…)`" + ` clause.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? |
+  select(.type=="tool_use") | select(.name=="Bash" or .name=="Edit") | "🔧 \(.name)"
+'
+` + "```" + `
+
+## How to wire to Monitor
+
+Run the chosen pipeline via the ` + "`Bash`" + ` tool with ` + "`run_in_background=true`" + `, capture the task id, hand it to ` + "`Monitor`" + `. Each stdout line is one Monitor notification — echo notable lines back to the user. Stop with ` + "`TaskStop`" + ` once the parent hook has delivered the result on the next prompt; there's no built-in terminal signal in any of these recipes (the JSONL keeps growing until ` + "`claude stop`" + ` runs), so it's a *"watch until you're done watching"* pattern, not *"watch until delegate completes"*.
+
+## Notes
+
+- ` + "`_delegate-jsonl`" + ` is a pure read: polls until the supervisor materialises the JSONL, never writes inside the delegate dir. If the dispatcher already failed (` + "`dispatch-error.md`" + ` exists) it exits non-zero immediately with a useful stderr message instead of polling.
+- ` + "`tail -F`" + ` (capital F) survives log rotation; ` + "`tail -n +1 -F`" + ` replays from the start of the file, useful when the delegate has already emitted some events before you attach.
+- ` + "`jq --unbuffered`" + ` is required: without it, pipe buffering can swallow events for minutes before flushing. Same for ` + "`grep --line-buffered`" + ` if you chain one in.
 `
 
 // delegateRequest is the on-disk JSON the slash command writes;
