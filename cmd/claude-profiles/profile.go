@@ -47,10 +47,11 @@ type ProfilePrefs struct {
 	// bg delegate's subprocess environment (effective on Claude Code v2.1.146+).
 	// Controls the model used by any subagents the delegate itself spawns — a
 	// separate axis from _settings.model, which controls the delegate's own
-	// model. Power-user knob: most users don't need to set this. Silently a
-	// no-op on Claude Code < v2.1.146 (the env var didn't propagate to child
-	// processes before that fix).
-	SubagentModel string `json:"subagent_model,omitempty"`
+	// model. JSON tag is `_subagent_model` (matching the Profile-side tag) so
+	// the prefs round-trip and the edit TUI stay symmetric with Distill /
+	// Isolated / Worktree. Silently a no-op on Claude Code < v2.1.146 (the env
+	// var didn't propagate to child processes before that fix).
+	SubagentModel string `json:"_subagent_model,omitempty"`
 }
 
 // ProfilePrefsStore is the on-disk shape of ~/.claude-profiles/profile-prefs.json.
@@ -174,6 +175,13 @@ type Profile struct {
 	// Empty or "off" disables. Default off — writes to committed surfaces are
 	// opt-in. Overridable via ProfilePrefs.Distill or DISTILL_ON_STOP=0 env var.
 	Distill string `json:"_distill,omitempty"`
+	// SubagentModel pins the model used by any subagents a bg `/delegate`
+	// session itself spawns — distinct from `_settings.model`, which pins the
+	// delegate's own model. When non-empty, `cmdDelegateBgDispatch` injects
+	// CLAUDE_CODE_SUBAGENT_MODEL=<value> into the bg subprocess env. Effective
+	// on Claude Code v2.1.146+ (older versions silently dropped the env var
+	// before it reached child processes).
+	SubagentModel string `json:"_subagent_model,omitempty"`
 	// Builtin, when non-empty, marks this Profile as one of the synthetic
 	// built-in profiles (":default", ":project"). Built-ins have no directory
 	// on disk; their behaviour comes from claudeFlags emitting a specific
@@ -338,9 +346,11 @@ func saveProfileAt(dir string, p *Profile) error {
 	// Metadata (_description, _isolated, _prompts, _cwd) goes to the user prefs
 	// store keyed by dir. profile.json in the profile directory is intentionally
 	// not written here; if one exists on disk it wins at load time over these prefs.
-	// Preserve disabled + subagent_model state so editing a profile doesn't
-	// accidentally re-enable a hidden profile or drop a user's SubagentModel
-	// (neither is exposed in the Profile struct).
+	// Preserve Disabled — it lives only in prefs (no Profile-struct counterpart)
+	// so editing a profile via the TUI must not accidentally re-enable a hidden
+	// profile. Every other field is sourced from the Profile struct, including
+	// SubagentModel which was promoted to a first-class Profile field so the
+	// edit TUI can drive it.
 	existingPrefs := loadProfilePrefs(dir)
 	return saveProfilePrefs(dir, ProfilePrefs{
 		Description:   p.Description,
@@ -350,7 +360,7 @@ func saveProfileAt(dir string, p *Profile) error {
 		Prompts:       p.Prompts,
 		Cwd:           p.Cwd,
 		Distill:       p.Distill,
-		SubagentModel: existingPrefs.SubagentModel,
+		SubagentModel: p.SubagentModel,
 	})
 }
 
@@ -523,6 +533,9 @@ func loadProfileAt(path string) (*Profile, error) {
 	}
 	if prefs.Distill != "" {
 		p.Distill = prefs.Distill
+	}
+	if prefs.SubagentModel != "" {
+		p.SubagentModel = prefs.SubagentModel
 	}
 
 	// Fall back to .claude-plugin/plugin.json for description (always last resort).

@@ -221,12 +221,16 @@ func cmdDelegateBgDispatch(args []string) {
 	}
 	cmd.Env = append(os.Environ(), "CLAUDE_PROFILES_DELEGATE=1")
 	// SubagentModel (issue #18) pins the model used by any subagents the bg
-	// delegate itself spawns. CLAUDE_CODE_SUBAGENT_MODEL only reliably reaches
-	// child processes since Claude Code v2.1.146 — on older versions this is a
-	// no-op rather than an error. Append AFTER CLAUDE_PROFILES_DELEGATE so the
-	// distill guard ordering invariant in CLAUDE.md is preserved.
-	if prefs.SubagentModel != "" {
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_SUBAGENT_MODEL="+prefs.SubagentModel)
+	// delegate itself spawns. Read from the resolved Profile (which already
+	// merges profile.json + prefs via loadProfileAt) so the value can be set
+	// either in profile.json _subagent_model OR in prefs — the edit TUI writes
+	// through prefs but power users can pin it directly in the profile file.
+	// CLAUDE_CODE_SUBAGENT_MODEL only reliably reaches child processes since
+	// Claude Code v2.1.146; on older versions this is a no-op. Append AFTER
+	// CLAUDE_PROFILES_DELEGATE so the distill guard ordering invariant in
+	// CLAUDE.md is preserved.
+	if p.SubagentModel != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_SUBAGENT_MODEL="+p.SubagentModel)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

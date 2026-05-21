@@ -461,6 +461,7 @@ fi
 # Positive: separate profile with prefs.SubagentModel set. We hand-write
 # profile-prefs.json keyed by the absolute profile dir (canonicalProfileDir
 # is identity on a non-worktree absolute path under tmpdir).
+# Positive case A: prefs.SubagentModel set (TUI write-through path).
 SM_PROFILE_DIR="$CLAUDE_PROFILES_ROOT/profiles/smoke-bg-haiku"
 mkdir -p "$SM_PROFILE_DIR"
 cat > "$SM_PROFILE_DIR/profile.json" <<'JSON'
@@ -474,7 +475,7 @@ JSON
 cat > "$CLAUDE_PROFILES_ROOT/profile-prefs.json" <<JSON
 {
   "$SM_PROFILE_DIR": {
-    "subagent_model": "claude-haiku-4-5-20251001"
+    "_subagent_model": "claude-haiku-4-5-20251001"
   }
 }
 JSON
@@ -488,7 +489,7 @@ JSON
 "$BIN" _delegate-bg-dispatch "$SM_DELG_ID" >/dev/null
 
 if grep -F -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001" "$SMOKE/bg-env.log"; then
-  echo "ok: prefs.subagent_model injected as CLAUDE_CODE_SUBAGENT_MODEL"
+  echo "ok: prefs._subagent_model injected as CLAUDE_CODE_SUBAGENT_MODEL"
 else
   echo "FAIL: CLAUDE_CODE_SUBAGENT_MODEL not present or wrong value in bg env"
   echo "  --- relevant env lines ---"
@@ -502,6 +503,46 @@ if grep -q '^CLAUDE_PROFILES_DELEGATE=1$' "$SMOKE/bg-env.log"; then
   echo "ok: CLAUDE_PROFILES_DELEGATE=1 preserved alongside SubagentModel"
 else
   echo "FAIL: CLAUDE_PROFILES_DELEGATE=1 missing after SubagentModel injection"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Positive case B: _subagent_model in profile.json directly (no prefs entry).
+# The dispatcher reads p.SubagentModel, which loadProfileAt populates from
+# whichever source has a value — profile.json wins when prefs is empty.
+PJ_PROFILE_DIR="$CLAUDE_PROFILES_ROOT/profiles/smoke-bg-pjson-sub"
+mkdir -p "$PJ_PROFILE_DIR"
+cat > "$PJ_PROFILE_DIR/profile.json" <<'JSON'
+{
+  "_settings": {},
+  "_subagent_model": "claude-sonnet-4-6"
+}
+JSON
+cat > "$PJ_PROFILE_DIR/.mcp.json" <<'JSON'
+{"mcpServers": {}}
+JSON
+# Important: do NOT add a prefs entry for this profile — we're proving that
+# profile.json alone is sufficient. Reset prefs to just the prior entry.
+cat > "$CLAUDE_PROFILES_ROOT/profile-prefs.json" <<JSON
+{
+  "$SM_PROFILE_DIR": {
+    "_subagent_model": "claude-haiku-4-5-20251001"
+  }
+}
+JSON
+
+PJ_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+PJ_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$PJ_DELG_ID"
+mkdir -p "$PJ_DELG_DIR"
+cat > "$PJ_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg-pjson-sub","task":"x","parent_session":"$PARENT_SID","delegate_id":"$PJ_DELG_ID","dir":""}
+JSON
+"$BIN" _delegate-bg-dispatch "$PJ_DELG_ID" >/dev/null
+
+if grep -F -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-4-6" "$SMOKE/bg-env.log"; then
+  echo "ok: profile.json _subagent_model injected when prefs is empty"
+else
+  echo "FAIL: _subagent_model in profile.json was ignored by dispatcher"
+  grep -E '^CLAUDE_(PROFILES|CODE)_' "$SMOKE/bg-env.log" || echo "  (no CLAUDE_* in env)"
   FAILURES=$((FAILURES + 1))
 fi
 

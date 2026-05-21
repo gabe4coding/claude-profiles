@@ -120,7 +120,7 @@ A profile is a directory under `~/.claude-profiles/<name>/` containing a `profil
 | **Worktree**      | Auto-create a git worktree for each launch (great for parallel agents)        |
 | **Distill**       | Run the session-distillation hook at stop                                     |
 | **Cwd**           | Pin the working directory so the profile always lands in the right repo      |
-| **Subagent model**| _Advanced_ — pin a separate model for subagents the bg `/delegate` spawns, via `subagent_model` in `profile-prefs.json` (requires Claude Code ≥ v2.1.146) |
+| **Subagent model**| _Advanced_ — pin a separate model for subagents the bg `/delegate` spawns, via the edit TUI (`Subagent model: …`) or `_subagent_model` in `profile.json`. Requires Claude Code ≥ v2.1.146. |
 
 Inspect any profile in detail:
 

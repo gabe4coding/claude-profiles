@@ -1168,6 +1168,9 @@ func hubTitle(loc ProfileLocation, running []RunningWrapper, bg []BackgroundedSe
 		if strings.EqualFold(p.Distill, "on") {
 			tags = append(tags, "distill")
 		}
+		if p.SubagentModel != "" {
+			tags = append(tags, "sub:"+shortModelLabel(p.SubagentModel))
+		}
 		if p.Cwd != "" {
 			tags = append(tags, "cwd")
 		}
