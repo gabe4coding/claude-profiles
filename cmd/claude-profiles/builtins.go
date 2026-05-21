@@ -96,13 +96,6 @@ func resolveBuiltinLocation(id string) *ProfileLocation {
 	return nil
 }
 
-// isBuiltinID reports whether id matches one of the reserved built-in
-// identifiers. Used at profile-creation time to refuse names that would
-// later be shadowed by the built-in resolution in resolveProfileLocation.
-func isBuiltinID(id string) bool {
-	return resolveBuiltinLocation(id) != nil
-}
-
 // validateNewProfileName returns an error when name would collide with the
 // reserved built-in namespace or contain characters that break QualifiedID
 // parsing ("/" is the repo-alias separator). Called from cmdNew / cmdImport /

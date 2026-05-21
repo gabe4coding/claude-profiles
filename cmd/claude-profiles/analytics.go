@@ -294,6 +294,9 @@ func parseSessionFile(path string) *sessionMetrics {
 		mu.CacheRead += u.CacheReadInputTokens
 	}
 
+	// Best-effort scan: partial result preferred to discarding the session.
+	_ = scanner.Err()
+
 	if m.SessionID == "" || m.TurnCount == 0 {
 		return nil
 	}
@@ -504,10 +507,7 @@ func cmdAnalytics(_ []string) {
 		"Session", "Profile", "Project", "Peak Context", "Cache", "Sys%", "Tool%", "Burn/t", "Turns")
 	dot()
 
-	limit := 10
-	if len(sessions) < limit {
-		limit = len(sessions)
-	}
+	limit := min(10, len(sessions))
 	for _, s := range sessions[:limit] {
 		pct := s.peakPercent()
 		peakStr := fmt.Sprintf("%s/%s (%d%%)",

@@ -3,5 +3,10 @@
 /cmd/claude-profiles/claude-profiles
 *.test
 
+# Claude Code local state: worktrees, project-level settings, plugin state.
+# Each .claude/worktrees/<name>/ is its own git tree; ignoring at the repo
+# root prevents `git add -A` from staging them as embedded submodules.
+/.claude/
+
 # macOS
 .DS_Store

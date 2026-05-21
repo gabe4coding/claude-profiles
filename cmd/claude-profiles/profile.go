@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -109,17 +108,15 @@ func deleteProfilePrefs(dir string) error {
 // from the worktree.
 func canonicalProfileDir(dir string) string {
 	const marker = "/.claude/worktrees/"
-	idx := strings.Index(dir, marker)
-	if idx < 0 {
+	repoRoot, afterMarker, found := strings.Cut(dir, marker)
+	if !found {
 		return dir
 	}
-	repoRoot := dir[:idx]
-	after := dir[idx+len(marker):]
-	slash := strings.Index(after, "/")
-	if slash < 0 {
+	_, tail, hasTail := strings.Cut(afterMarker, "/")
+	if !hasTail {
 		return dir // no path after the worktree name, nothing to remap
 	}
-	return repoRoot + after[slash:] // repoRoot + /<relative-tail>
+	return repoRoot + "/" + tail
 }
 
 // mainRepoRoot strips a /.claude/worktrees/<name> segment from dir to recover
@@ -129,17 +126,15 @@ func canonicalProfileDir(dir string) string {
 // OwnerRepo canonicalisation.
 func mainRepoRoot(dir string) string {
 	const marker = "/.claude/worktrees/"
-	idx := strings.Index(dir, marker)
-	if idx < 0 {
+	repoRoot, afterMarker, found := strings.Cut(dir, marker)
+	if !found {
 		return dir
 	}
-	repoRoot := dir[:idx]
-	after := dir[idx+len(marker):]
-	slash := strings.Index(after, "/")
-	if slash < 0 {
+	_, tail, hasTail := strings.Cut(afterMarker, "/")
+	if !hasTail {
 		return repoRoot // dir IS the worktree root — drop the whole segment
 	}
-	return repoRoot + after[slash:]
+	return repoRoot + "/" + tail
 }
 
 type Profile struct {
@@ -638,21 +633,3 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-func printProfileList(names []string) {
-	for i, name := range names {
-		p, err := loadProfile(name)
-		var servers, filter string
-		if err == nil {
-			snames := make([]string, 0, len(p.McpServers))
-			for k := range p.McpServers {
-				snames = append(snames, k)
-			}
-			sort.Strings(snames)
-			servers = "[" + strings.Join(snames, ", ") + "]"
-			if len(p.DeniedTools) > 0 {
-				filter = fmt.Sprintf(" [deny:%d]", len(p.DeniedTools))
-			}
-		}
-		fmt.Fprintf(os.Stderr, "  %2d) %-24s %s%s\n", i+1, name, servers, filter)
-	}
-}

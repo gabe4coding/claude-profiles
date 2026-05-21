@@ -284,12 +284,15 @@ func extractLastAssistantFromFile(path string) string {
 	}
 
 	// Slurp the file then scan in reverse — sessions are usually small enough.
+	// Best-effort: partial slurp degrades to the same empty-result path the
+	// hook already handles when the file is missing.
 	lines := []string{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<16), 1<<24)
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}
+	_ = sc.Err()
 	for i := len(lines) - 1; i >= 0; i-- {
 		var ev event
 		if json.Unmarshal([]byte(lines[i]), &ev) != nil {

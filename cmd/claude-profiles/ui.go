@@ -500,29 +500,12 @@ func pickScope() string {
 	return scope
 }
 
-// fitHeight returns a Height that caps the viewport for large lists (used only
-// when option count exceeds maxAutoOptions). For small lists, callers should
-// omit Height() so huh sizes the viewport to fit every option.
-func fitHeight(n int) int {
+// fitHeight returns a Height that caps the viewport for large lists. Callers
+// gate on option count before calling this — for small lists they should omit
+// Height() entirely so huh sizes the viewport to fit every option.
+func fitHeight() int {
 	const maxViewport = 20
 	return maxViewport
-}
-
-func profileLabel(name string) string {
-	p, err := loadProfile(name)
-	if err != nil {
-		return name
-	}
-	servers := make([]string, 0, len(p.McpServers))
-	for k := range p.McpServers {
-		servers = append(servers, k)
-	}
-	sort.Strings(servers)
-	label := fmt.Sprintf("%-24s %s", name, "["+strings.Join(servers, ", ")+"]")
-	if len(p.DeniedTools) > 0 {
-		label += styleInfo.Render(fmt.Sprintf(" deny:%d", len(p.DeniedTools)))
-	}
-	return label
 }
 
 // resolveProfile returns a profile name from an explicit arg or interactive picker.
@@ -746,7 +729,7 @@ func multiSelectTools(tools []ToolInfo, mode string) []string {
 		Filterable(true)
 	// Only cap viewport for large lists; small lists auto-size to fit.
 	if len(opts) > 15 {
-		ms = ms.Height(fitHeight(len(opts)))
+		ms = ms.Height(fitHeight())
 	}
 	err := runField(ms)
 	handleAbort(err)
@@ -755,7 +738,7 @@ func multiSelectTools(tools []ToolInfo, mode string) []string {
 
 func parseSelectionNumbers(raw string, tools []ToolInfo) []string {
 	var out []string
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		s := strings.TrimSpace(part)
 		var n int
 		if _, err := fmt.Sscanf(s, "%d", &n); err != nil || n < 1 || n > len(tools) {
