@@ -1,27 +1,33 @@
 #!/usr/bin/env bash
-# Smoke test for /delegate --bg (Agent View dispatch path).
+# Smoke test for /delegate (Agent View dispatch path, bg-only after Atto III).
 #
-# Drives the bg dispatcher + state watcher against a stub `claude` binary,
-# so we exercise the Go code end-to-end without burning subscription quota
-# or depending on a real Claude Code daemon being up.
+# Drives the bg dispatcher + state watcher + parent hook against a stub
+# `claude` binary, so we exercise the Go code end-to-end without burning
+# subscription quota or depending on a real Claude Code daemon being up.
 #
 # What this validates:
 #   1. _delegate-bg-dispatch builds a `claude --bg` command from a profile,
 #      captures the short bg id, and writes bg-session-id.txt.
 #   2. The dispatcher passes the profile's _settings (with the distill Stop
-#      hook entry) via --settings <file> — validating the M-scope "distill
-#      validation" without actually running a hook end-to-end.
-#   3. _delegate-bg-watcher polls the supervisor's state.json, extracts the
-#      last assistant message from linkScanPath, and writes result.md in
-#      the layout the existing UserPromptSubmit hook expects.
+#      hook entry) via --settings <file>.
+#   3. _delegate-bg-watcher polls state.json and calls `claude stop <bg-id>`
+#      once the session reaches a terminal state. After Atto III the
+#      watcher does NOT write any result file — the hook reads state.json
+#      directly.
 #   4. The UserPromptSubmit hook, given the parent session id on stdin,
-#      reads result.md and emits its content as additionalContext (and
-#      renames result.md to delivered.md so it isn't re-injected).
+#      reads each delegate's bg-session-id.txt → state.json, extracts the
+#      assistant text from linkScanPath, emits it as additionalContext,
+#      and writes a delivered.txt marker so subsequent prompts don't
+#      re-fire the same reply.
+#   5. The dispatcher applies the goal-name prefix to --name (Issue #18
+#      Atto I.5 invariant).
+#   6. Slash-command tasks (req.Task starting with "/") are forwarded to
+#      `claude --bg` unmodified (Issue #17 v2.1.146+ regression guard).
 #
-# What this does NOT validate (out of scope for M):
+# What this does NOT validate:
 #   - Real Claude Code daemon behaviour (subprocess wakeups, worktree
-#     creation, model dispatch, plugin loading) — covered manually post-merge.
-#   - The distill Stop hook actually firing inside a bg session — Atto II.
+#     creation, model dispatch, plugin loading) — covered manually
+#     post-merge.
 #
 # Run from the repo root:
 #   ./scripts/smoke-delegate-bg.sh
@@ -206,53 +212,67 @@ assert_file_contains "$SMOKE/bg-args.log" '^--name$' "dispatcher passes --name"
 assert_file_contains "$SMOKE/bg-args.log" '^--plugin-dir$' "dispatcher passes --plugin-dir"
 assert_file_contains "$SMOKE/bg-args.log" '^--permission-mode$' "dispatcher passes --permission-mode"
 
-# ---- Step 2: wait for the watcher to write result.md -----------------------
-echo "==> waiting for bg watcher to write result.md (state.json pre-populated)"
+# ---- Step 2: wait for the watcher to call `claude stop` --------------------
+#
+# After Atto III the watcher's only job is freeing the Agent View slot via
+# `claude stop` once the session reaches a terminal state. It writes NO
+# result file — the parent hook reads state.json directly on the next
+# UserPromptSubmit (Step 3).
+echo "==> waiting for bg watcher to call claude stop (state.json pre-populated)"
 WAITED=0
-while [ ! -f "$DELG_DIR/result.md" ] && [ $WAITED -lt 30 ]; do
+while [ ! -f "$SMOKE/stops.log" ] && [ $WAITED -lt 30 ]; do
   sleep 1
   WAITED=$((WAITED + 1))
 done
 
-if [ ! -f "$DELG_DIR/result.md" ]; then
-  echo "FAIL: result.md never appeared after ${WAITED}s"
+if [ ! -f "$SMOKE/stops.log" ]; then
+  echo "FAIL: claude stop never invoked after ${WAITED}s"
   echo "--- bg-watcher.log ---"; cat "$DELG_DIR/bg-watcher.log" 2>/dev/null || echo "(no log)"
   echo "--- state.json ---"; cat "$CLAUDE_CONFIG_DIR/jobs/$FAKE_BG_ID/state.json" 2>/dev/null
   FAILURES=$((FAILURES + 1))
 else
-  echo "ok: result.md appeared after ${WAITED}s"
-  assert_file_contains "$DELG_DIR/result.md" "SMOKE_REPLY_OK" "result.md carries the assistant text from the stub JSONL"
+  echo "ok: claude stop invoked after ${WAITED}s"
+  assert_file_contains "$SMOKE/stops.log" "stop $FAKE_BG_ID" "watcher called claude stop on terminal state"
 fi
 
-# Step 2.b: watcher called `claude stop <bg-id>` after writing result.md.
-WAITED=0
-while [ ! -f "$SMOKE/stops.log" ] && [ $WAITED -lt 5 ]; do
-  sleep 1
-  WAITED=$((WAITED + 1))
-done
-assert_file_contains "$SMOKE/stops.log" "stop $FAKE_BG_ID" "watcher called claude stop after result"
+# Step 2.b: watcher must NOT have written result.md (Atto III removed it).
+if [ -f "$DELG_DIR/result.md" ]; then
+  echo "FAIL: result.md was written — Atto III watcher should not write any result file"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: no result.md written (watcher is hook-driven now)"
+fi
 
-# ---- Step 3: parent UserPromptSubmit hook picks up result.md ---------------
+# ---- Step 3: parent UserPromptSubmit hook reads state.json directly --------
 echo "==> invoking _hook-prompt-submit with the parent session id"
 HOOK_OUT=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
 echo "$HOOK_OUT" | head -3
 
-# Step 3.a: hook output includes the assistant text.
+# Step 3.a: hook output includes the assistant text from state.json's linkScanPath.
 if echo "$HOOK_OUT" | grep -q "SMOKE_REPLY_OK"; then
-  echo "ok: hook injects result.md content as additionalContext"
+  echo "ok: hook injects state.json content as additionalContext"
 else
   echo "FAIL: hook output missing SMOKE_REPLY_OK"
   echo "$HOOK_OUT"
   FAILURES=$((FAILURES + 1))
 fi
 
-# Step 3.b: hook renames result.md → delivered.md.
-if [ -f "$DELG_DIR/delivered.md" ] && [ ! -f "$DELG_DIR/result.md" ]; then
-  echo "ok: hook renamed result.md → delivered.md"
+# Step 3.b: hook wrote delivered.txt marker.
+if [ -f "$DELG_DIR/delivered.txt" ]; then
+  echo "ok: hook wrote delivered.txt marker"
 else
-  echo "FAIL: hook did not rename result.md → delivered.md"
+  echo "FAIL: hook did not write delivered.txt marker"
   ls -la "$DELG_DIR"
   FAILURES=$((FAILURES + 1))
+fi
+
+# Step 3.c: hook is idempotent — a second invocation must not re-inject.
+HOOK_OUT2=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
+if echo "$HOOK_OUT2" | grep -q "SMOKE_REPLY_OK"; then
+  echo "FAIL: hook re-injected SMOKE_REPLY_OK after delivered.txt was written"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: hook is idempotent (delivered.txt blocks re-injection)"
 fi
 
 # ---- Step 4: goal-tagged dispatch writes the right --name -------------------
@@ -308,6 +328,103 @@ fi
 # bg-session-id.txt must be written (dispatch succeeded).
 slash_bg_id=$(cat "$SLASH_DELG_DIR/bg-session-id.txt" 2>/dev/null | tr -d '\n')
 assert_eq "$slash_bg_id" "$FAKE_BG_ID" "slash-command dispatch writes bg-session-id.txt"
+
+# ---- Step 6: dispatch-error.md path (Atto III hook handles dispatch failure) -
+#
+# When the dispatcher fails before bg-session-id.txt is written (profile
+# missing, disabled, claude not on PATH, etc.) it leaves dispatch-error.md
+# behind. The parent hook delivers that file's content and renames it to
+# delivered-error.md so it isn't re-fired on subsequent prompts.
+echo "==> Step 6: dispatch with unknown profile triggers dispatch-error.md"
+ERR_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+ERR_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$ERR_DELG_ID"
+mkdir -p "$ERR_DELG_DIR"
+cat > "$ERR_DELG_DIR/request.json" <<JSON
+{"profile":"this-profile-does-not-exist","task":"echo nope","parent_session":"$PARENT_SID","delegate_id":"$ERR_DELG_ID","dir":""}
+JSON
+
+# Expected: dispatch exits non-zero (profile resolve failure) and writes
+# dispatch-error.md. Wrap with `if ! …; then` to keep `set -e` happy.
+if "$BIN" _delegate-bg-dispatch "$ERR_DELG_ID" 2>/dev/null; then
+  echo "FAIL: dispatch with unknown profile should exit non-zero"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: dispatch with unknown profile exited non-zero"
+fi
+assert_file_contains "$ERR_DELG_DIR/dispatch-error.md" "does not resolve" "dispatch-error.md written with resolve error"
+
+ERR_HOOK_OUT=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
+if echo "$ERR_HOOK_OUT" | grep -q "does not resolve"; then
+  echo "ok: hook delivered dispatch-error.md content"
+else
+  echo "FAIL: hook did not deliver dispatch-error.md content"
+  echo "$ERR_HOOK_OUT" | head -5
+  FAILURES=$((FAILURES + 1))
+fi
+if [ -f "$ERR_DELG_DIR/delivered-error.md" ] && [ ! -f "$ERR_DELG_DIR/dispatch-error.md" ]; then
+  echo "ok: hook renamed dispatch-error.md → delivered-error.md"
+else
+  echo "FAIL: hook did not rename dispatch-error.md → delivered-error.md"
+  ls -la "$ERR_DELG_DIR"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# ---- Step 7: backward-compat — delivered.md (Atto II marker) skips ---------
+#
+# Upgrade scenario: a delegate from a previous (Atto II) session has a
+# delivered.md marker but no delivered.txt. Its bg-session-id.txt still
+# points at a state.json that is still terminal (because the supervisor's
+# state survives across upgrades). Without backward-compat, the new
+# hook would re-inject every such delegate on the first prompt after
+# upgrade. delivered.md must be treated as a skip marker.
+#
+# We pair the negative assertion (old delegate must NOT re-inject) with a
+# positive control (fresh undelivered delegate in the same hook call MUST
+# inject) so this step also catches "hook always returns empty" regressions
+# — a pure negative assertion would silently pass against a broken hook.
+echo "==> Step 7: delivered.md backward-compat + positive control"
+BC_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+BC_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$BC_DELG_ID"
+mkdir -p "$BC_DELG_DIR"
+# Same FAKE_BG_ID as Steps 1/4/5, so state.json is still terminal — if the
+# hook didn't honour delivered.md it would walk through to extract.
+echo "$FAKE_BG_ID" > "$BC_DELG_DIR/bg-session-id.txt"
+printf 'old reply from a previous session\n' > "$BC_DELG_DIR/delivered.md"
+cat > "$BC_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"old","parent_session":"$PARENT_SID","delegate_id":"$BC_DELG_ID","dir":""}
+JSON
+
+# Positive control: a brand-new undelivered delegate that *should* fire.
+# If the hook is broken end-to-end (returns empty for everything), this
+# assertion fails and the smoke catches it instead of silently passing
+# on the negative check.
+POS_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+POS_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$POS_DELG_ID"
+mkdir -p "$POS_DELG_DIR"
+echo "$FAKE_BG_ID" > "$POS_DELG_DIR/bg-session-id.txt"
+cat > "$POS_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"fresh","parent_session":"$PARENT_SID","delegate_id":"$POS_DELG_ID","dir":""}
+JSON
+
+BC_HOOK_OUT=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
+
+# Negative: BC_DELG_ID must NOT appear (delivered.md → skip).
+if echo "$BC_HOOK_OUT" | grep -F -q "$BC_DELG_ID"; then
+  echo "FAIL: hook re-injected delegate with Atto II delivered.md marker"
+  echo "  output: $BC_HOOK_OUT"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: delivered.md (Atto II marker) treated as skip"
+fi
+
+# Positive: POS_DELG_ID must appear (hook is processing entries).
+if echo "$BC_HOOK_OUT" | grep -F -q "$POS_DELG_ID"; then
+  echo "ok: positive control — fresh delegate injected (hook is alive)"
+else
+  echo "FAIL: positive control — hook did not inject fresh delegate"
+  echo "  output: $BC_HOOK_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
 
 # ---- Summary ---------------------------------------------------------------
 echo

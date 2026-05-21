@@ -546,11 +546,11 @@ func ensureHandoffSlashCommand() error {
 	commands := []struct{ name, body string }{
 		{"handoff.md", handoffSlashCommand},
 		{"generate.md", generateSlashCommand},
-		// /delegate is installed unconditionally: the default bg path
-		// dispatches via `claude --bg` and has no tmux dependency. The
-		// opt-in --legacy-tmux path still needs tmux; the launch script
-		// rejects --legacy-tmux invocations without $TMUX with a clear
-		// "run inside tmux or drop --legacy-tmux" message.
+		// /delegate is installed unconditionally. Atto III made bg the only
+		// dispatch path — no tmux dependency, no live-watcher subprocess.
+		// The launch script rejects the now-removed --bg / --legacy-tmux
+		// flags loudly so older invocations surface as errors instead of
+		// silent surprises.
 		{"delegate.md", delegateSlashCommand},
 	}
 	for _, sc := range commands {
@@ -561,19 +561,16 @@ func ensureHandoffSlashCommand() error {
 			}
 		}
 	}
-	// Bundled helper scripts the slash commands invoke via ${CLAUDE_PLUGIN_ROOT}.
-	// Keeps the slash-command bodies short and the orchestration logic auditable
-	// (and unit-testable) as plain bash. chmod 0o755 so they're executable. The
-	// launch script handles both bg and tmux modes; the watch script is only
-	// useful in tmux mode but writing it unconditionally is harmless (the bg
-	// path never invokes it).
+	// Bundled helper script the slash command invokes via ${CLAUDE_PLUGIN_ROOT}.
+	// chmod 0o755 so it's executable. Atto III dropped delegate-watch.sh
+	// alongside the tmux runner — the bg watcher is a Go subprocess
+	// (_delegate-bg-watcher), not a bash one.
 	scriptDir := filepath.Join(wrapperPluginPath(), "scripts")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
 		return err
 	}
 	for _, s := range []struct{ name, body string }{
 		{"delegate-launch.sh", delegateLaunchScript},
-		{"delegate-watch.sh", delegateWatchScript},
 	} {
 		path := filepath.Join(scriptDir, s.name)
 		if cur, err := os.ReadFile(path); err != nil || string(cur) != s.body {
@@ -582,9 +579,10 @@ func ensureHandoffSlashCommand() error {
 			}
 		}
 	}
-	// One-shot cleanup of stale slash-command files from earlier versions.
+	// One-shot cleanup of stale slash-command + script files from earlier versions.
 	_ = os.Remove(filepath.Join(claudeRootDirPath(), "commands", "switch.md"))
 	_ = os.Remove(filepath.Join(dir, "switch.md"))
+	_ = os.Remove(filepath.Join(scriptDir, "delegate-watch.sh"))
 	return nil
 }
 

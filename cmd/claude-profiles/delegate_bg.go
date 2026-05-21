@@ -11,28 +11,33 @@ import (
 	"time"
 )
 
-// /delegate --bg path: instead of spawning the delegate runner in a tmux
-// window, dispatch via `claude --bg` and rely on Claude Code's Agent View
-// supervisor to host the session. A small watcher subprocess polls the
-// session's state file under ~/.claude/jobs/<id>/state.json, and when the
-// first turn completes it extracts the last assistant text from the
-// linkScanPath jsonl and writes result.md exactly where the existing
-// UserPromptSubmit hook expects to find it. The hook is untouched: the
-// parent receives delegate replies via the same channel as before.
+// /delegate path (Atto III): dispatch via `claude --bg` and rely on Claude
+// Code's Agent View supervisor to host the session. A small watcher
+// subprocess polls the session's state file under ~/.claude/jobs/<id>/state.json,
+// and when the first turn completes it calls `claude stop <bg-id>` to free
+// the slot. The parent's UserPromptSubmit hook reads state.json directly
+// (no result.md round-trip) — the hook records a delivered.txt marker after
+// injection so subsequent prompts don't re-fire the same reply.
 //
-// Lifecycle (mirrors the tmux path's lifecycle comment in delegate.go):
-//   1. Slash command parses --bg, runs delegate-launch.sh --bg, which
-//      writes request.json and invokes `claude-profiles _delegate-bg-dispatch <id>`.
-//   2. _delegate-bg-dispatch reads the request, builds the claude --bg
-//      command from the profile flags (same logic as cmdDelegateRunner),
-//      captures the short bg session id from `backgrounded · <id>`,
-//      writes bg-session-id.txt, then spawns `_delegate-bg-watcher <id>`
-//      as a detached process and exits.
+// Lifecycle:
+//   1. Slash command runs delegate-launch.sh, which writes request.json
+//      and invokes `claude-profiles _delegate-bg-dispatch <id>`.
+//   2. _delegate-bg-dispatch reads the request, builds the `claude --bg`
+//      command from the profile flags, runs it, captures the short bg
+//      session id from `backgrounded · <id>`, writes bg-session-id.txt,
+//      then spawns `_delegate-bg-watcher <id>` as a detached process and
+//      exits. Failures before bg-session-id.txt is written leave
+//      dispatch-error.md behind so the parent hook can deliver the error.
 //   3. _delegate-bg-watcher polls ~/.claude/jobs/<bg-id>/state.json.
-//      When state reaches a "first turn done" condition it reads the
-//      linkScanPath jsonl, extracts the last assistant text, writes
-//      result.md, then calls `claude stop <bg-id>` to free the slot.
-//      On timeout it stops the session and writes a fallback message.
+//      When state reaches a "first turn done" condition it calls
+//      `claude stop <bg-id>` to free the Agent View slot — that's its
+//      only job; the parent hook handles result delivery. On timeout it
+//      stops the session and writes dispatch-error.md.
+//   4. On the parent's next UserPromptSubmit, cmdHookPromptSubmit walks
+//      the delegates dir, reads each bg session's state.json directly,
+//      extracts the assistant reply from linkScanPath, and injects it
+//      as additionalContext. A delivered.txt marker is written so the
+//      same reply isn't re-injected on subsequent prompts.
 
 const (
 	bgWatcherPollInterval = 2 * time.Second
@@ -66,6 +71,20 @@ func claudeJobsDir() string {
 	return filepath.Join(home, ".claude", "jobs")
 }
 
+// writeDispatchError records a dispatch-time failure for the parent hook to
+// pick up. Used when the dispatcher can't even reach `claude --bg` (profile
+// missing, disabled, binary not on PATH, etc.) or when the watcher gives up
+// (timeout). The parent's UserPromptSubmit hook reads this file and renames
+// it to delivered-error.md after injection so the same error isn't repeated
+// on every subsequent prompt.
+//
+// Plain-text body, no trailer: the Atto II "delegate cleanup reminder" is
+// no longer applicable (there is no tmux window to close and no Monitor
+// watcher to release).
+func writeDispatchError(dir, body string) {
+	_ = os.WriteFile(filepath.Join(dir, "dispatch-error.md"), []byte(body), 0o644)
+}
+
 // cmdDelegateBgDispatch is invoked by delegate-launch.sh in --bg mode:
 // `claude-profiles _delegate-bg-dispatch <delegate-id>`. Synchronous:
 // reads request.json, builds the claude --bg command, runs it, captures
@@ -85,59 +104,50 @@ func cmdDelegateBgDispatch(args []string) {
 
 	loc, err := resolveProfileLocation(req.Profile)
 	if err != nil {
-		writeDelegateResult(dir, fmt.Sprintf("(delegate %s failed: profile %q does not resolve: %v)", delegateID, req.Profile, err))
+		writeDispatchError(dir, fmt.Sprintf("(delegate %s failed: profile %q does not resolve: %v)", delegateID, req.Profile, err))
 		fatal(err)
 	}
 	if loadProfilePrefs(filepath.Dir(loc.JSONPath)).Disabled {
 		msg := fmt.Sprintf("(delegate %s failed: profile %q is disabled)", delegateID, req.Profile)
-		writeDelegateResult(dir, msg)
+		writeDispatchError(dir, msg)
 		fatal(fmt.Errorf("profile %q is disabled", req.Profile))
 	}
 	p, err := loadProfileAt(loc.JSONPath)
 	if err != nil {
-		writeDelegateResult(dir, fmt.Sprintf("(delegate %s failed to load profile: %v)", delegateID, err))
+		writeDispatchError(dir, fmt.Sprintf("(delegate %s failed to load profile: %v)", delegateID, err))
 		fatal(err)
 	}
 
-	// Workspace binding (same enforcement as cmdDelegateRunner): a project-
-	// local profile with _worktree:true is bound to its owning repo.
-	if p.Worktree && loc.OwnerRepo != "" {
-		target := req.Dir
-		if target == "" {
-			msg := fmt.Sprintf("(delegate refused: profile %q is bound to %s and requires --dir to point there)", req.Profile, loc.OwnerRepo)
-			writeDelegateResult(dir, msg)
-			info("Delegate %s rejected — bound profile invoked without --dir", delegateID)
-			return
-		}
-		if !isCwdUnder(mainRepoRoot(target), loc.OwnerRepo) {
-			msg := fmt.Sprintf("(delegate refused: profile %q is bound to %s and cannot run on %s)", req.Profile, loc.OwnerRepo, target)
-			writeDelegateResult(dir, msg)
-			info("Delegate %s rejected — --dir %s is outside bound repo %s", delegateID, target, loc.OwnerRepo)
-			return
-		}
-	}
+	// Atto III: `OwnerRepo` is no longer enforced at dispatch time — it's
+	// kept as a hub-filter hint only (see listAllLocations). Dispatching a
+	// worktree-bound profile against the "wrong" repo now silently runs
+	// the delegate there; the hub still groups profiles correctly so the
+	// UX hint survives. Tradeoff: we trade a guard against a foot-gun for
+	// a simpler dispatcher and lower coupling. If this regresses for real
+	// users the binding can come back as a runtime check on req.Dir
+	// without re-introducing the tmux path.
 
 	// Settings: write the profile's inline _settings beside the request,
 	// so --settings takes the same path-style argument as the wrapper. The
 	// file lives in the delegate dir (not os.TempDir) so it gets cleaned
-	// up alongside request.json / bg-session-id.txt / result.md when the
-	// user reaps the delegate, instead of leaking into /tmp on every
-	// dispatch. Stop hooks (e.g. distill) propagate through this file
-	// into the bg session — failing to write means the delegate would
-	// silently lose its hooks, so we fail dispatch loudly instead.
+	// up alongside request.json / bg-session-id.txt when the user reaps
+	// the delegate, instead of leaking into /tmp on every dispatch. Stop
+	// hooks (e.g. distill) propagate through this file into the bg
+	// session — failing to write means the delegate would silently lose
+	// its hooks, so we fail dispatch loudly instead.
 	settingsPath := ""
 	if len(p.Settings) > 0 {
 		settingsPath = filepath.Join(dir, "settings.json")
 		if err := os.WriteFile(settingsPath, p.Settings, 0o644); err != nil {
 			body := fmt.Sprintf("(delegate %s failed to write settings.json: %v)", delegateID, err)
-			writeDelegateResult(dir, body)
+			writeDispatchError(dir, body)
 			fatal(fmt.Errorf("write %s: %v", settingsPath, err))
 		}
 	}
 
 	binary, err := exec.LookPath("claude")
 	if err != nil {
-		writeDelegateResult(dir, fmt.Sprintf("(delegate %s failed: claude binary not on PATH)", delegateID))
+		writeDispatchError(dir, fmt.Sprintf("(delegate %s failed: claude binary not on PATH)", delegateID))
 		fatal(err)
 	}
 
@@ -189,7 +199,7 @@ func cmdDelegateBgDispatch(args []string) {
 
 	if err := validateGoalName(req.Goal); err != nil {
 		body := fmt.Sprintf("(delegate %s rejected: %v)", delegateID, err)
-		writeDelegateResult(dir, body)
+		writeDispatchError(dir, body)
 		fatal(err)
 	}
 	displayName := bgDisplayName(req.Profile, req.Task, req.Goal)
@@ -212,34 +222,35 @@ func cmdDelegateBgDispatch(args []string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		body := fmt.Sprintf("(delegate %s failed to dispatch via `claude --bg`: %v\n\nOutput:\n%s)", delegateID, err, string(out))
-		writeDelegateResult(dir, body)
+		writeDispatchError(dir, body)
 		fatal(fmt.Errorf("claude --bg dispatch failed: %v", err))
 	}
 
 	bgID := parseBackgroundedID(string(out))
 	if bgID == "" {
 		body := fmt.Sprintf("(delegate %s failed: could not parse bg session id from claude --bg output:\n\n%s)", delegateID, string(out))
-		writeDelegateResult(dir, body)
+		writeDispatchError(dir, body)
 		fatal(fmt.Errorf("could not parse bg id from: %s", out))
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "bg-session-id.txt"), []byte(bgID), 0o644); err != nil {
 		fatal(fmt.Errorf("write bg-session-id.txt: %v", err))
 	}
-	// Resumability note (v2.1.144+): Claude Code's /resume picker now surfaces
-	// bg sessions alongside interactive ones. If a user /resume's this delegate
-	// after it completes, the resumed session is entirely unobserved by this
-	// codebase: the watcher has exited, result.md / delivered.md are already
-	// settled, and no new output is injected into the parent. /resume on a
-	// completed delegate is therefore unsupported — treat it as manual
-	// inspection only, with no expectation of result.md delivery.
+	// Resumability note (v2.1.144+): Claude Code's /resume picker now
+	// surfaces bg sessions alongside interactive ones. If a user /resume's
+	// this delegate after it completes, the resumed session is entirely
+	// unobserved by this codebase: the watcher has exited, the parent has
+	// already marked the delegate as delivered (delivered.txt), and the
+	// hook won't re-inject. /resume on a completed delegate is therefore
+	// unsupported — treat it as manual inspection only, with no
+	// expectation of result delivery to the parent.
 
 	if err := spawnBgWatcher(delegateID); err != nil {
-		// Watcher failed to start — write a result.md hint so the parent
-		// at least knows the dispatch happened but result delivery is broken.
+		// Watcher failed to start — record a dispatch error so the parent
+		// at least knows the dispatch happened but lifecycle is broken.
 		body := fmt.Sprintf("(delegate %s dispatched as bg session %s but the watcher failed to spawn: %v\n\nRun `claude attach %s` to interact with the delegate manually.)",
 			delegateID, bgID, err, bgID)
-		writeDelegateResult(dir, body)
+		writeDispatchError(dir, body)
 		fatal(err)
 	}
 
@@ -247,10 +258,14 @@ func cmdDelegateBgDispatch(args []string) {
 	fmt.Printf("DELEGATE_BG_NAME=%s\n", displayName)
 }
 
-// cmdDelegateBgWatcher polls ~/.claude/jobs/<bg-id>/state.json and writes
-// result.md when the first turn completes (or the session is otherwise
-// terminal). On timeout it calls `claude stop <bg-id>` and writes a
-// fallback. Designed to be run detached from the launching process.
+// cmdDelegateBgWatcher polls ~/.claude/jobs/<bg-id>/state.json until the
+// bg session reaches a terminal state, then calls `claude stop <bg-id>` to
+// free the Agent View slot. Atto III: the watcher no longer writes any
+// result file — the parent UserPromptSubmit hook reads state.json directly
+// (via the bg-session-id.txt the dispatcher already wrote). On timeout we
+// stop the session and leave dispatch-error.md behind so the parent gets a
+// message instead of an indefinite stall. Designed to be run detached from
+// the launching process.
 func cmdDelegateBgWatcher(args []string) {
 	if len(args) < 1 {
 		fatal(fmt.Errorf("usage: claude-profiles _delegate-bg-watcher <delegate-id>"))
@@ -278,33 +293,46 @@ func cmdDelegateBgWatcher(args []string) {
 	idBytes, err := os.ReadFile(filepath.Join(dir, "bg-session-id.txt"))
 	if err != nil {
 		logf("read bg-session-id.txt: %v", err)
-		writeDelegateResult(dir, fmt.Sprintf("(delegate %s: bg watcher could not read bg-session-id.txt: %v)", delegateID, err))
+		writeDispatchError(dir, fmt.Sprintf("(delegate %s: bg watcher could not read bg-session-id.txt: %v)", delegateID, err))
 		fatal(err)
 	}
 	bgID := strings.TrimSpace(string(idBytes))
 	if bgID == "" {
 		logf("empty bg session id")
-		writeDelegateResult(dir, fmt.Sprintf("(delegate %s: bg watcher found empty bg-session-id.txt)", delegateID))
+		writeDispatchError(dir, fmt.Sprintf("(delegate %s: bg watcher found empty bg-session-id.txt)", delegateID))
 		return
 	}
 
 	statePath := filepath.Join(claudeJobsDir(), bgID, "state.json")
-	resultPath := filepath.Join(dir, "result.md")
 	deadline := time.Now().Add(bgWatcherAbandonAfter)
 
 	logf("watching state %s for delegate %s (bg %s)", statePath, delegateID, bgID)
 
 	for time.Now().Before(deadline) {
-		// If result.md already exists (e.g. dispatcher fast-path or manual
-		// write), respect it. The parent UserPromptSubmit hook is the only
-		// authoritative consumer; we never re-write a file it might have
-		// already renamed to delivered.md.
-		if _, err := os.Stat(resultPath); err == nil {
-			logf("result.md already exists, exiting")
-			return
+		// If the parent hook has already delivered, exit early — no point
+		// keeping the slot warm. Both markers (success / error) signal a
+		// terminal hook interaction. Skip `claude stop` when the supervisor
+		// already knows the session is stopped: state was the hook's signal
+		// to deliver, and if it reads "stopped" we'd just be spawning a
+		// subprocess for a no-op.
+		hookDeliveredSuccess := false
+		hookDeliveredError := false
+		if _, err := os.Stat(filepath.Join(dir, "delivered.txt")); err == nil {
+			hookDeliveredSuccess = true
+		} else if _, err := os.Stat(filepath.Join(dir, "delivered-error.md")); err == nil {
+			hookDeliveredError = true
 		}
-		if _, err := os.Stat(filepath.Join(dir, "delivered.md")); err == nil {
-			logf("delivered.md exists, exiting")
+		if hookDeliveredSuccess || hookDeliveredError {
+			marker := "delivered.txt"
+			if hookDeliveredError {
+				marker = "delivered-error.md"
+			}
+			if cur, err := readBgJobState(statePath); err == nil && cur.State == "stopped" {
+				logf("%s exists and session already stopped, exiting", marker)
+				return
+			}
+			logf("%s exists, stopping and exiting", marker)
+			stopBgSession(bgID, logf)
 			return
 		}
 
@@ -316,21 +344,7 @@ func cmdDelegateBgWatcher(args []string) {
 		}
 
 		if isBgFirstTurnDone(state) {
-			body := ""
-			if state.LinkScanPath != "" {
-				body = extractLastAssistantFromFile(state.LinkScanPath)
-			}
-			if body == "" {
-				// Fall back to whatever short status the supervisor exposes —
-				// better than the empty-reply error string in cases where the
-				// JSONL hasn't been flushed yet.
-				body = strings.TrimSpace(state.Detail)
-			}
-			if body == "" {
-				body = fmt.Sprintf("(delegate %s finished bg turn but produced no assistant text yet; state=%s)", delegateID, state.State)
-			}
-			writeDelegateResult(dir, body)
-			logf("wrote result.md (state=%s, linkScanPath=%s, len=%d)", state.State, state.LinkScanPath, len(body))
+			logf("first turn done (state=%s, linkScanPath=%s) — stopping bg session; parent hook will pick up the result", state.State, state.LinkScanPath)
 			stopBgSession(bgID, logf)
 			return
 		}
@@ -338,11 +352,14 @@ func cmdDelegateBgWatcher(args []string) {
 		time.Sleep(bgWatcherPollInterval)
 	}
 
-	// Timeout. Stop the session and write a fallback result so the parent
-	// gets *something* on its next prompt instead of an indefinite stall.
+	// Timeout. If we got here, the hook never delivered (otherwise the
+	// early-exit branch at the top of the loop would have caught
+	// delivered.txt / delivered-error.md and bailed). Stop the session
+	// and record a dispatch error so the parent gets *something* on its
+	// next prompt instead of an indefinite stall.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
-	writeDelegateResult(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
+	writeDispatchError(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
 		delegateID, bgWatcherAbandonAfter, bgID, bgID))
 }
 
@@ -382,8 +399,8 @@ func isBgFirstTurnDone(s bgJobState) bool {
 }
 
 // stopBgSession runs `claude stop <id>` best-effort. Errors are logged but
-// not fatal — the watcher's job is delivering result.md, not enforcing
-// session lifecycle.
+// not fatal — the watcher's job is freeing the Agent View slot, not
+// enforcing session lifecycle.
 func stopBgSession(bgID string, logf func(string, ...any)) {
 	bin, err := exec.LookPath("claude")
 	if err != nil {
@@ -532,8 +549,9 @@ func spawnBgWatcher(delegateID string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start watcher: %v", err)
 	}
-	// Don't Wait — let the watcher run until result.md is written or the
-	// timeout fires. The process is reparented to init when we exit.
+	// Don't Wait — let the watcher run until the bg session reaches a
+	// terminal state (and `claude stop` runs) or the timeout fires. The
+	// process is reparented to init when we exit.
 	return nil
 }
 
