@@ -376,6 +376,87 @@ func cmdDelegateBgWatcher(args []string) {
 		delegateID, bgWatcherAbandonAfter, bgID, bgID))
 }
 
+// cmdDelegateLinkScanPath prints the absolute path of the running bg
+// delegate's session JSONL (state.linkScanPath) so callers can compose
+// `tail -F | jq --unbuffered | Monitor` pipelines without reaching into the
+// supervisor's state file themselves. Pure read: never writes inside the
+// delegate dir.
+//
+// Two waits in series:
+//
+//  1. `bg-session-id.txt` may not exist yet (dispatcher writes it after
+//     `claude --bg` returns the bg id).
+//  2. `state.linkScanPath` may be empty even once the file exists (supervisor
+//     materialises the JSONL ~5s after dispatch).
+//
+// Total budget is bgLinkScanPathBudget (30s). When the dispatcher already
+// wrote dispatch-error.md (no bg-session-id.txt to point at) we exit
+// non-zero immediately so callers can distinguish "still warming up" from
+// "dispatch failed". This subcommand is documented in the slash-command
+// markdown under "Live progress (advanced)" — most delegates don't need it,
+// the parent hook still delivers results without any caller involvement.
+func cmdDelegateLinkScanPath(args []string) {
+	if len(args) < 1 {
+		fatal(fmt.Errorf("usage: claude-profiles _delegate-jsonl <delegate-id>"))
+	}
+	delegateID := args[0]
+
+	dir, _ := findDelegateRequest(delegateID)
+	if dir == "" {
+		fmt.Fprintf(os.Stderr, "delegate %s: no request.json found under %s\n", delegateID, delegatesDir())
+		os.Exit(1)
+	}
+
+	deadline := time.Now().Add(bgLinkScanPathBudget)
+	bgIDPath := filepath.Join(dir, "bg-session-id.txt")
+
+	for time.Now().Before(deadline) {
+		// Fail fast on a real dispatch failure: the dispatcher writes
+		// dispatch-error.md when it bails before bg-session-id.txt, so its
+		// presence is a definitive "no bg session will ever exist for this
+		// delegate" — polling further is wasted budget.
+		if _, err := os.Stat(filepath.Join(dir, "dispatch-error.md")); err == nil {
+			fmt.Fprintf(os.Stderr, "delegate %s: dispatch failed (see %s/dispatch-error.md)\n",
+				delegateID, dir)
+			os.Exit(1)
+		}
+
+		idBytes, err := os.ReadFile(bgIDPath)
+		if err != nil {
+			time.Sleep(bgLinkScanPathPoll)
+			continue
+		}
+		bgID := strings.TrimSpace(string(idBytes))
+		if bgID == "" {
+			time.Sleep(bgLinkScanPathPoll)
+			continue
+		}
+
+		statePath := filepath.Join(claudeJobsDir(), bgID, "state.json")
+		state, err := readBgJobState(statePath)
+		if err == nil && state.LinkScanPath != "" {
+			fmt.Println(state.LinkScanPath)
+			return
+		}
+		time.Sleep(bgLinkScanPathPoll)
+	}
+
+	fmt.Fprintf(os.Stderr, "delegate %s: timed out after %s waiting for linkScanPath in state.json\n",
+		delegateID, bgLinkScanPathBudget)
+	os.Exit(1)
+}
+
+// Polling cadence for cmdDelegateLinkScanPath. The total budget covers two
+// races: the dispatcher writing bg-session-id.txt, and the supervisor
+// materialising the JSONL (state.linkScanPath becoming non-empty). 30s is
+// roomy for both even on a cold supervisor — the worst real-world latency
+// measured in Atto III testing was ~6s end-to-end. Polling at 250ms keeps
+// the cache-miss cost low for callers that hit the helper early.
+const (
+	bgLinkScanPathBudget = 30 * time.Second
+	bgLinkScanPathPoll   = 250 * time.Millisecond
+)
+
 // readBgJobState reads and parses the supervisor's state file for a bg
 // session. Returns a zero value (not an error) when the file does not
 // exist yet — the supervisor may take a beat after `claude --bg` returns

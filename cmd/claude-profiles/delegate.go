@@ -123,7 +123,7 @@ claude-profiles _delegate-bg-dispatch "$DELG_ID"
 `
 
 const delegateSlashCommand = `---
-description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook — no live progress streaming. Good for a deliberate "send-this-and-walk-away" pattern: the orchestrator keeps working while the delegate runs.
+description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook. Default is headless ("send-this-and-walk-away"); opt-in live progress streaming via _delegate-jsonl + tail -F + Monitor is available when the user explicitly wants to watch tools fire.
 argument-hint: <profile-id|intent> [--dir <path>] [--goal <name>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
@@ -163,6 +163,26 @@ Tell the user in 1-2 short lines:
   - that the result will arrive on their next prompt — they can also run ` + "`claude attach <DELEGATE_BG_ID>`" + ` to interact directly, or open ` + "`claude agents`" + ` for the full dashboard
 
 Then go back to whatever the user was working on. Do NOT read the delegate's state.json or jsonl yourself: let the hook handle it on the next prompt.
+
+# 4. Live progress (advanced — skip unless asked)
+
+The bg-only protocol is intentionally headless: the result lands on the next prompt and that's enough for almost every use case. **Skip this section unless the user specifically asks to watch the delegate's tools fire as they happen** (long-running orchestrators, debugging a delegate that's behaving oddly, watching for a stuck MCP call).
+
+If they do, you can stream digest lines using a helper subcommand + ` + "`Monitor`" + `:
+
+` + "```bash" + `
+JSONL=$(claude-profiles _delegate-jsonl "<DELEGATE_ID>")  # blocks up to 30s waiting for state.linkScanPath
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type == "assistant") |
+  .message.content[]? |
+  select(.type == "tool_use") |
+  "🔧 \(.name)"
+'
+` + "```" + `
+
+Run that pipeline via the ` + "`Bash`" + ` tool with ` + "`run_in_background=true`" + `, capture the task id, and hand it to ` + "`Monitor`" + `. Each ` + "`tool_use`" + ` line becomes one Monitor notification. Echo notable lines back to the user. Stop the task with ` + "`TaskStop`" + ` once the parent hook has delivered the result on the next prompt — there's no built-in terminal signal in this recipe, so it's a "watch until you're done watching" pattern, not "watch until delegate completes". Filter further with ` + "`jq`" + ` if the user wants thinking / text events too.
+
+` + "`_delegate-jsonl`" + ` is a pure read: it polls until the supervisor materialises the JSONL and never writes inside the delegate dir. If the dispatcher already failed (` + "`dispatch-error.md`" + ` exists) it exits non-zero with a useful stderr message instead of polling forever.
 `
 
 // delegateRequest is the on-disk JSON the slash command writes;
