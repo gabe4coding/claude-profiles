@@ -43,6 +43,14 @@ type ProfilePrefs struct {
 	// surface (CLAUDE.md, .claude/rules/, CLAUDE.local.md, or user-level). Empty
 	// or "off" disables it. Acts as a user-side override of the profile setting.
 	Distill string `json:"_distill,omitempty"`
+	// SubagentModel, when non-empty, injects CLAUDE_CODE_SUBAGENT_MODEL into the
+	// bg delegate's subprocess environment (effective on Claude Code v2.1.146+).
+	// Controls the model used by any subagents the delegate itself spawns — a
+	// separate axis from _settings.model, which controls the delegate's own
+	// model. Power-user knob: most users don't need to set this. Silently a
+	// no-op on Claude Code < v2.1.146 (the env var didn't propagate to child
+	// processes before that fix).
+	SubagentModel string `json:"subagent_model,omitempty"`
 }
 
 // ProfilePrefsStore is the on-disk shape of ~/.claude-profiles/profile-prefs.json.
@@ -330,16 +338,19 @@ func saveProfileAt(dir string, p *Profile) error {
 	// Metadata (_description, _isolated, _prompts, _cwd) goes to the user prefs
 	// store keyed by dir. profile.json in the profile directory is intentionally
 	// not written here; if one exists on disk it wins at load time over these prefs.
-	// Preserve disabled state so editing a profile doesn't accidentally re-enable it.
+	// Preserve disabled + subagent_model state so editing a profile doesn't
+	// accidentally re-enable a hidden profile or drop a user's SubagentModel
+	// (neither is exposed in the Profile struct).
 	existingPrefs := loadProfilePrefs(dir)
 	return saveProfilePrefs(dir, ProfilePrefs{
-		Description: p.Description,
-		Isolated:    p.Isolated,
-		Disabled:    existingPrefs.Disabled,
-		Worktree:    p.Worktree,
-		Prompts:     p.Prompts,
-		Cwd:         p.Cwd,
-		Distill:     p.Distill,
+		Description:   p.Description,
+		Isolated:      p.Isolated,
+		Disabled:      existingPrefs.Disabled,
+		Worktree:      p.Worktree,
+		Prompts:       p.Prompts,
+		Cwd:           p.Cwd,
+		Distill:       p.Distill,
+		SubagentModel: existingPrefs.SubagentModel,
 	})
 }
 

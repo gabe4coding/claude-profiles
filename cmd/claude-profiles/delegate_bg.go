@@ -107,7 +107,8 @@ func cmdDelegateBgDispatch(args []string) {
 		writeDispatchError(dir, fmt.Sprintf("(delegate %s failed: profile %q does not resolve: %v)", delegateID, req.Profile, err))
 		fatal(err)
 	}
-	if loadProfilePrefs(filepath.Dir(loc.JSONPath)).Disabled {
+	prefs := loadProfilePrefs(filepath.Dir(loc.JSONPath))
+	if prefs.Disabled {
 		msg := fmt.Sprintf("(delegate %s failed: profile %q is disabled)", delegateID, req.Profile)
 		writeDispatchError(dir, msg)
 		fatal(fmt.Errorf("profile %q is disabled", req.Profile))
@@ -219,6 +220,14 @@ func cmdDelegateBgDispatch(args []string) {
 		cmd.Dir = req.Dir
 	}
 	cmd.Env = append(os.Environ(), "CLAUDE_PROFILES_DELEGATE=1")
+	// SubagentModel (issue #18) pins the model used by any subagents the bg
+	// delegate itself spawns. CLAUDE_CODE_SUBAGENT_MODEL only reliably reaches
+	// child processes since Claude Code v2.1.146 — on older versions this is a
+	// no-op rather than an error. Append AFTER CLAUDE_PROFILES_DELEGATE so the
+	// distill guard ordering invariant in CLAUDE.md is preserved.
+	if prefs.SubagentModel != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_SUBAGENT_MODEL="+prefs.SubagentModel)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		body := fmt.Sprintf("(delegate %s failed to dispatch via `claude --bg`: %v\n\nOutput:\n%s)", delegateID, err, string(out))

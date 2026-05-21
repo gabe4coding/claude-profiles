@@ -69,10 +69,11 @@ LOG="$SMOKE/stub.log"
 echo "claude invoked: \$*" >> "\$LOG"
 case "\$1" in
   --bg)
-    # Persist this specific invocation's args so the smoke test can
+    # Persist this specific invocation's args + env so the smoke test can
     # introspect them later. `claude stop` (separate invocation) must NOT
-    # clobber this — that's why we don't share a single args.log.
+    # clobber these — that's why we don't share a single args.log / env.log.
     printf '%s\n' "\$@" > "$SMOKE/bg-args.log"
+    /usr/bin/env > "$SMOKE/bg-env.log"
     JOB_DIR="$CLAUDE_CONFIG_DIR/jobs/$FAKE_BG_ID"
     mkdir -p "\$JOB_DIR"
     cat > "\$JOB_DIR/state.json" <<JSON
@@ -423,6 +424,84 @@ if echo "$BC_HOOK_OUT" | grep -F -q "$POS_DELG_ID"; then
 else
   echo "FAIL: positive control — hook did not inject fresh delegate"
   echo "  output: $BC_HOOK_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# ---- Step 8: SubagentModel injection (issue #18) ---------------------------
+#
+# A profile with prefs.SubagentModel set must cause cmdDelegateBgDispatch to
+# inject CLAUDE_CODE_SUBAGENT_MODEL=<value> into the bg subprocess env. The
+# stub `claude --bg` dumps its env to bg-env.log on every invocation, so we
+# can assert it without exercising the real Claude Code daemon.
+#
+# Symmetric negative control: the existing smoke-bg profile (no prefs entry)
+# must NOT have CLAUDE_CODE_SUBAGENT_MODEL in its delegate env — proves we're
+# not just always leaking it through os.Environ().
+echo "==> Step 8: SubagentModel env injection"
+
+# Negative control first: re-dispatch a delegate against smoke-bg (no prefs
+# subagent_model set) and assert CLAUDE_CODE_SUBAGENT_MODEL is absent from
+# the bg env. Important: this runs BEFORE we write the prefs file, so the
+# absence is unambiguous.
+NEG_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+NEG_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$NEG_DELG_ID"
+mkdir -p "$NEG_DELG_DIR"
+cat > "$NEG_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"neg-control","parent_session":"$PARENT_SID","delegate_id":"$NEG_DELG_ID","dir":""}
+JSON
+"$BIN" _delegate-bg-dispatch "$NEG_DELG_ID" >/dev/null
+if grep -q '^CLAUDE_CODE_SUBAGENT_MODEL=' "$SMOKE/bg-env.log"; then
+  echo "FAIL: CLAUDE_CODE_SUBAGENT_MODEL leaked into delegate env without prefs"
+  grep '^CLAUDE_CODE_SUBAGENT_MODEL=' "$SMOKE/bg-env.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: no CLAUDE_CODE_SUBAGENT_MODEL when prefs.subagent_model unset"
+fi
+
+# Positive: separate profile with prefs.SubagentModel set. We hand-write
+# profile-prefs.json keyed by the absolute profile dir (canonicalProfileDir
+# is identity on a non-worktree absolute path under tmpdir).
+SM_PROFILE_DIR="$CLAUDE_PROFILES_ROOT/profiles/smoke-bg-haiku"
+mkdir -p "$SM_PROFILE_DIR"
+cat > "$SM_PROFILE_DIR/profile.json" <<'JSON'
+{
+  "_settings": {}
+}
+JSON
+cat > "$SM_PROFILE_DIR/.mcp.json" <<'JSON'
+{"mcpServers": {}}
+JSON
+cat > "$CLAUDE_PROFILES_ROOT/profile-prefs.json" <<JSON
+{
+  "$SM_PROFILE_DIR": {
+    "subagent_model": "claude-haiku-4-5-20251001"
+  }
+}
+JSON
+
+SM_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+SM_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$SM_DELG_ID"
+mkdir -p "$SM_DELG_DIR"
+cat > "$SM_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg-haiku","task":"x","parent_session":"$PARENT_SID","delegate_id":"$SM_DELG_ID","dir":""}
+JSON
+"$BIN" _delegate-bg-dispatch "$SM_DELG_ID" >/dev/null
+
+if grep -F -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5-20251001" "$SMOKE/bg-env.log"; then
+  echo "ok: prefs.subagent_model injected as CLAUDE_CODE_SUBAGENT_MODEL"
+else
+  echo "FAIL: CLAUDE_CODE_SUBAGENT_MODEL not present or wrong value in bg env"
+  echo "  --- relevant env lines ---"
+  grep -E '^CLAUDE_(PROFILES|CODE)_' "$SMOKE/bg-env.log" || echo "  (no CLAUDE_* in env)"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Also assert CLAUDE_PROFILES_DELEGATE=1 is still in the env — the
+# SubagentModel block must be additive, not replace the distill guard.
+if grep -q '^CLAUDE_PROFILES_DELEGATE=1$' "$SMOKE/bg-env.log"; then
+  echo "ok: CLAUDE_PROFILES_DELEGATE=1 preserved alongside SubagentModel"
+else
+  echo "FAIL: CLAUDE_PROFILES_DELEGATE=1 missing after SubagentModel injection"
   FAILURES=$((FAILURES + 1))
 fi
 
