@@ -45,20 +45,6 @@ cat > "$HOME/.claude-profiles/run/${WRAPPER_PID}.json" <<JSON
 {"pid":$WRAPPER_PID,"profile":"smoke","session_id":"parent-smoke-sid","started_at":0,"cwd":"$SMOKE"}
 JSON
 
-# Common env for every test case. Each case overrides as needed.
-run_launch() {
-  unset TMUX
-  unset CLAUDE_PROFILES_DELEGATE_BG
-  unset CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX
-  env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
-    CLAUDE_PROFILES_RUN=1 \
-    CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
-    HOME="$HOME" \
-    PATH="$PATH" \
-    "$@" \
-    "$LAUNCH" "smoke" --bg "task body"
-}
-
 FAILURES=0
 expect_rc_and_msg() {
   local name="$1" want_rc="$2" want_needle="$3"; shift 3
@@ -148,7 +134,7 @@ exec "$BIN" "\$@"
 EOF
 chmod +x "$STUB_BIN_DIR/claude-profiles"
 
-out=$(env \
+out=$(env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
   CLAUDE_PROFILES_RUN=1 \
   CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
   HOME="$HOME" \
