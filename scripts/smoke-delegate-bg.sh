@@ -458,10 +458,7 @@ else
   echo "ok: no CLAUDE_CODE_SUBAGENT_MODEL when prefs.subagent_model unset"
 fi
 
-# Positive: separate profile with prefs.SubagentModel set. We hand-write
-# profile-prefs.json keyed by the absolute profile dir (canonicalProfileDir
-# is identity on a non-worktree absolute path under tmpdir).
-# Positive case A: prefs.SubagentModel set (TUI write-through path).
+# Positive case A: prefs._subagent_model set (TUI write-through path).
 SM_PROFILE_DIR="$CLAUDE_PROFILES_ROOT/profiles/smoke-bg-haiku"
 mkdir -p "$SM_PROFILE_DIR"
 cat > "$SM_PROFILE_DIR/profile.json" <<'JSON'
@@ -543,6 +540,76 @@ if grep -F -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-4-6" "$SMOKE/bg-env.log"
 else
   echo "FAIL: _subagent_model in profile.json was ignored by dispatcher"
   grep -E '^CLAUDE_(PROFILES|CODE)_' "$SMOKE/bg-env.log" || echo "  (no CLAUDE_* in env)"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# ---- Step 9: _delegate-jsonl helper (Atto IV — Monitor restoration) --------
+#
+# The helper prints state.linkScanPath so callers can compose tail -F | jq |
+# Monitor pipelines without touching the supervisor's state file directly.
+# Two paths to cover:
+#   - Happy path: bg-session-id.txt exists, state.linkScanPath populated → the
+#     helper prints the path and exits 0.
+#   - Fail-fast path: dispatch-error.md exists (no bg session was ever started)
+#     → the helper exits non-zero immediately, no 30s timeout burn.
+echo "==> Step 9: _delegate-jsonl happy + fail-fast"
+
+# Happy path: reuse the already-dispatched DELG_ID from Step 1. Its
+# bg-session-id.txt points at $FAKE_BG_ID, whose state.json carries the
+# pre-populated linkScanPath.
+HELPER_OUT=$("$BIN" _delegate-jsonl "$DELG_ID" 2>/dev/null)
+HELPER_RC=$?
+if [ "$HELPER_RC" != "0" ]; then
+  echo "FAIL: _delegate-jsonl exited rc=$HELPER_RC on happy path"
+  FAILURES=$((FAILURES + 1))
+else
+  assert_eq "$HELPER_OUT" "$JSONL_PATH" "_delegate-jsonl prints state.linkScanPath on happy path"
+fi
+
+# Fail-fast path: dispatch-error.md exists (no bg session was ever started).
+# The helper must exit non-zero quickly (< 5s; full timeout budget is 30s) —
+# no point polling when the dispatcher already gave up.
+EARLY_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+EARLY_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$EARLY_DELG_ID"
+mkdir -p "$EARLY_DELG_DIR"
+cat > "$EARLY_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"x","parent_session":"$PARENT_SID","delegate_id":"$EARLY_DELG_ID","dir":""}
+JSON
+echo "(simulated dispatch failure)" > "$EARLY_DELG_DIR/dispatch-error.md"
+
+START_T=$(date +%s)
+if "$BIN" _delegate-jsonl "$EARLY_DELG_ID" 2>/dev/null; then
+  echo "FAIL: _delegate-jsonl should exit non-zero when dispatch-error.md exists"
+  FAILURES=$((FAILURES + 1))
+else
+  ELAPSED=$(( $(date +%s) - START_T ))
+  if [ "$ELAPSED" -gt 5 ]; then
+    echo "FAIL: _delegate-jsonl fail-fast took ${ELAPSED}s — must short-circuit on dispatch-error.md"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "ok: _delegate-jsonl exits non-zero on dispatch-error.md (${ELAPSED}s elapsed)"
+  fi
+fi
+
+# Unknown delegate id: helper must exit non-zero (no request.json under
+# delegatesDir() means we can't even find the delegate dir).
+if "$BIN" _delegate-jsonl "deadbeef" 2>/dev/null; then
+  echo "FAIL: _delegate-jsonl should exit non-zero on unknown delegate id"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: _delegate-jsonl exits non-zero on unknown delegate id"
+fi
+
+# Pure-read invariant: the helper must NEVER write inside the delegate dir
+# (write would race with the watcher). Snapshot DELG_DIR before/after.
+BEFORE=$(ls -1 "$DELG_DIR" | sort)
+"$BIN" _delegate-jsonl "$DELG_ID" >/dev/null 2>&1
+AFTER=$(ls -1 "$DELG_DIR" | sort)
+if [ "$BEFORE" = "$AFTER" ]; then
+  echo "ok: _delegate-jsonl is a pure read (no new files in delegate dir)"
+else
+  echo "FAIL: _delegate-jsonl wrote inside the delegate dir"
+  diff <(echo "$BEFORE") <(echo "$AFTER")
   FAILURES=$((FAILURES + 1))
 fi
 

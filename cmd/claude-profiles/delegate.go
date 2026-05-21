@@ -123,7 +123,7 @@ claude-profiles _delegate-bg-dispatch "$DELG_ID"
 `
 
 const delegateSlashCommand = `---
-description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook — no live progress streaming. Good for a deliberate "send-this-and-walk-away" pattern: the orchestrator keeps working while the delegate runs.
+description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook. Default is headless ("send-this-and-walk-away"); opt-in live progress streaming via _delegate-jsonl + tail -F + Monitor is available when the user explicitly wants to watch tools fire.
 argument-hint: <profile-id|intent> [--dir <path>] [--goal <name>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
@@ -163,6 +163,63 @@ Tell the user in 1-2 short lines:
   - that the result will arrive on their next prompt — they can also run ` + "`claude attach <DELEGATE_BG_ID>`" + ` to interact directly, or open ` + "`claude agents`" + ` for the full dashboard
 
 Then go back to whatever the user was working on. Do NOT read the delegate's state.json or jsonl yourself: let the hook handle it on the next prompt.
+
+# 4. Live progress (advanced — skip unless asked)
+
+The bg-only protocol is intentionally headless: the result lands on the next prompt and that's enough for almost every use case. **Skip this section unless the user specifically asks to watch the delegate's tools fire as they happen** (long-running orchestrators, debugging a delegate that's behaving oddly, watching for a stuck MCP call).
+
+If they do, resolve the JSONL once and then pick a filter level by how much noise the user wants:
+
+` + "```bash" + `
+JSONL=$(claude-profiles _delegate-jsonl "<DELEGATE_ID>")  # blocks up to 30s waiting for state.linkScanPath
+` + "```" + `
+
+## Filter levels (compose your own jq, these are starting points)
+
+**Level 0 — silent** — one line per delegate (the final reply text only). Use when the user wants confirmation it's still alive but no commentary.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text
+'
+` + "```" + `
+
+**Level 1 — terse** — one line per tool call (name only). Default level: tells the user *what* the delegate is doing without flooding the chat.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | "🔧 \(.name)"
+'
+` + "```" + `
+
+**Level 2 — verbose** — text replies and tool calls with a snippet of the first argument. Use when the user is debugging a delegate or wants to see reasoning interleaved with tool firing.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? |
+  (select(.type=="text")     | "💬 \(.text[0:120])"),
+  (select(.type=="tool_use") | "🔧 \(.name) \((.input | to_entries[0].value // "") | tostring | .[0:60])")
+'
+` + "```" + `
+
+**Level 3 — filtered** — only specific tools. Use when the user is watching for something specific (slow Bash, repeated Read on the same file, etc.). Replace the ` + "`select(.name==…)`" + ` clause.
+
+` + "```bash" + `
+tail -F "$JSONL" | jq -r --unbuffered '
+  select(.type=="assistant") | .message.content[]? |
+  select(.type=="tool_use") | select(.name=="Bash" or .name=="Edit") | "🔧 \(.name)"
+'
+` + "```" + `
+
+## How to wire to Monitor
+
+Run the chosen pipeline via the ` + "`Bash`" + ` tool with ` + "`run_in_background=true`" + `, capture the task id, hand it to ` + "`Monitor`" + `. Each stdout line is one Monitor notification — echo notable lines back to the user. Stop with ` + "`TaskStop`" + ` once the parent hook has delivered the result on the next prompt; there's no built-in terminal signal in any of these recipes (the JSONL keeps growing until ` + "`claude stop`" + ` runs), so it's a *"watch until you're done watching"* pattern, not *"watch until delegate completes"*.
+
+## Notes
+
+- ` + "`_delegate-jsonl`" + ` is a pure read: polls until the supervisor materialises the JSONL, never writes inside the delegate dir. If the dispatcher already failed (` + "`dispatch-error.md`" + ` exists) it exits non-zero immediately with a useful stderr message instead of polling.
+- ` + "`tail -F`" + ` (capital F) survives log rotation; ` + "`tail -n +1 -F`" + ` replays from the start of the file, useful when the delegate has already emitted some events before you attach.
+- ` + "`jq --unbuffered`" + ` is required: without it, pipe buffering can swallow events for minutes before flushing. Same for ` + "`grep --line-buffered`" + ` if you chain one in.
 `
 
 // delegateRequest is the on-disk JSON the slash command writes;
