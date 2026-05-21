@@ -500,12 +500,10 @@ func pickScope() string {
 	return scope
 }
 
-// fitHeight returns a Height that caps the viewport for large lists (used only
-// when option count exceeds maxAutoOptions). For small lists, callers should
-// omit Height() so huh sizes the viewport to fit every option. The list size
-// is not consulted: a fixed cap is sufficient because callers gate on count
-// before calling this.
-func fitHeight(_ int) int {
+// fitHeight returns a Height that caps the viewport for large lists. Callers
+// gate on option count before calling this — for small lists they should omit
+// Height() entirely so huh sizes the viewport to fit every option.
+func fitHeight() int {
 	const maxViewport = 20
 	return maxViewport
 }
@@ -731,7 +729,7 @@ func multiSelectTools(tools []ToolInfo, mode string) []string {
 		Filterable(true)
 	// Only cap viewport for large lists; small lists auto-size to fit.
 	if len(opts) > 15 {
-		ms = ms.Height(fitHeight(len(opts)))
+		ms = ms.Height(fitHeight())
 	}
 	err := runField(ms)
 	handleAbort(err)

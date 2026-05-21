@@ -294,11 +294,7 @@ func parseSessionFile(path string) *sessionMetrics {
 		mu.CacheRead += u.CacheReadInputTokens
 	}
 
-	// Best-effort scan: a partial result (truncated JSONL, oversized line) is
-	// preferable to discarding the session entirely — analytics aggregates
-	// across many sessions and a single read error on one shouldn't kill the
-	// rollup. scanner.Err() is checked to silence gopls scannererr; we
-	// intentionally drop the error.
+	// Best-effort scan: partial result preferred to discarding the session.
 	_ = scanner.Err()
 
 	if m.SessionID == "" || m.TurnCount == 0 {

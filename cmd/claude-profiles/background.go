@@ -119,8 +119,7 @@ func profileFromSessionJSONL(sessionID, cwd string, locs []ProfileLocation) stri
 			}
 		}
 	}
-	// Best-effort: capped at 50 lines anyway; ignoring scanner.Err() is
-	// intentional. The call silences gopls scannererr.
+	// Best-effort: capped at 50 lines; partial result acceptable.
 	_ = scanner.Err()
 	return ""
 }
@@ -181,8 +180,7 @@ func hintFromSessionJSONL(sessionID, cwd string) string {
 		}
 		return text
 	}
-	// Best-effort: capped at 200 lines anyway; ignoring scanner.Err() is
-	// intentional. The call silences gopls scannererr.
+	// Best-effort: capped at 200 lines; partial result acceptable.
 	_ = scanner.Err()
 	return ""
 }
