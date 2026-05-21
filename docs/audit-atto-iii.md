@@ -89,6 +89,15 @@ The bg path already exposes everything the parent hook needs via `~/.claude/jobs
 
 Each step ships its own smoke. Step 3's smoke (legacy tmux gone) replaces `smoke-delegate-legacy-tmux.sh` (if we ever add one) with a "must error" assertion.
 
+## PR #19 constraints to preserve through Atto III
+
+[PR #19](https://github.com/gabe4coding/claude-profiles/pull/19) (open draft as of writing — issues #16/#17/#18) lands a set of bg-only invariants that Atto III must keep working when it tears down the tmux path. None overlap with my audit's demolition targets; record them here so the next session doesn't accidentally regress them.
+
+1. **`CLAUDE_PROFILES_DELEGATE=1` env injection (load-bearing).** `cmdDelegateBgDispatch` already sets this on `cmd.Env` (`delegate_bg.go:206`). `cmdHookStop` (`distill.go`) bails when it sees this env — preventing the delegate's Stop hook from advancing the parent profile's distill bookmark. Atto III's hook redesign must not drop this guard, even if `result.md` is gone; the guard prevents *delegate-side* misbehavior, not parent-side delivery.
+2. **Resumability is explicitly unsupported.** `/resume` on a completed bg delegate (Claude Code v2.1.144+ shows them in the picker) does not re-trigger result delivery — the watcher is gone and `result.md` is settled. The new hook protocol in Atto III must preserve this: scanning `state.json` on every parent `UserPromptSubmit` should detect "already delivered" via the marker file (`delivered.txt`) and skip, even if the session id is technically still "alive" in Agent View.
+3. **Minimum Claude Code version v2.1.146 for slash-command tasks.** `cmdDelegateBgDispatch` documents this; the smoke covers it (Step 5 in `smoke-delegate-bg.sh` after PR #19 lands). Atto III's redesign should not bump this floor unless there's a concrete reason — bg dispatch should keep working for tasks that start with `/`.
+4. **Issue #18 (`SubagentModel`) targets the bg dispatcher only.** Spec at `docs/spec-issue-18-subagent-model.md`. When implemented, `cmdDelegateBgDispatch` will inject `CLAUDE_CODE_SUBAGENT_MODEL` from `ProfilePrefs.SubagentModel`. Atto III's hook redesign is unaffected — this is a dispatcher concern, not a parent-hook concern.
+
 ## Issue #9 Steps 2-3 — interaction with Atto III
 
 `docs/spec-issue-9-agent-discovery.md` Steps 2 (integrate `claudeAgentsJSON` into `announceDelegateJSONLPath`) and 3 (fallback in `cmdDelegateRunner`) both touch legacy tmux code. Atto III deletes both targets.
