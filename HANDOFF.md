@@ -40,19 +40,27 @@ We're migrating the **execution layer** to `claude --bg` (so delegates show up i
    - Display-name format is a pinned roundtrip contract (constants `goalPrefix`, `goalDelim` in `delegate_bg.go`) with a Go unit test (`TestBgDisplayNameGoalRoundtrip`) and a fixture-based smoke (`scripts/smoke-goal.sh`)
    - No changes to `result.md` or the hook
 
-3. **Atto II — Default flip + audit.** Flip `/delegate` default to `--bg`; old path behind `--legacy-tmux`. Audit consumers of `result.md` / `jsonl-path.txt` (one known: `cmdHookPromptSubmit`). Must come *after* (1).
+3. **Atto II — Default flip + audit — SHIPPED** in [PR #20](https://github.com/gabe4coding/claude-profiles/pull/20) (draft).
+   - `/delegate` default flipped to `--bg`; legacy tmux behind `--legacy-tmux` (env: `CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1`).
+   - Clean break with Atto I's opt-in: `--bg` and `CLAUDE_PROFILES_DELEGATE_BG` rejected loudly with migration message.
+   - `--goal` constraint inverted: was "requires --bg", now "incompatible with --legacy-tmux".
+   - Slash command markdown rewritten bg-first; legacy tmux mode explicitly scoped to opt-in only.
+   - Audit doc `docs/audit-atto-iii.md` lists every consumer of `result.md` and `jsonl-path.txt` plus the redesign sketch for Atto III. Also notes PR #19's bg-only invariants Atto III must preserve.
+   - New smoke `scripts/smoke-delegate-flags.sh` covers the bash flag-handling paths (rejection of `--bg`, `CLAUDE_PROFILES_DELEGATE_BG`, `--legacy-tmux` outside tmux, `--goal` with `--legacy-tmux`, default path, env-var legacy opt-in).
+   - New hidden subcommand `_install-wrapper-plugin` installs `commands/` + `scripts/` without starting a session (used by the flag smoke).
 
-4. **Atto III — Demolition.** Delete tmux runner (`cmdDelegateRunner`, `writeResultOnFirstTurnComplete`, post-run fallback), `result.md` as integration point, `jsonl-path.txt`, `OwnerRepo` enforcement at dispatch (keep as hub hint only), `delegate-<id>` worktree naming. Redesign parent ↔ delegate handoff to read `~/.claude/jobs/<id>/state.json` directly from the hook.
+4. **Atto III — Demolition.** Delete tmux runner (`cmdDelegateRunner`, `writeResultOnFirstTurnComplete`, post-run fallback), `result.md` as integration point, `jsonl-path.txt`, `OwnerRepo` enforcement at dispatch (keep as hub hint only), `delegate-<id>` worktree naming. Redesign parent ↔ delegate handoff to read `~/.claude/jobs/<id>/state.json` directly from the hook. **Pre-read `docs/audit-atto-iii.md`** before starting — it has the full consumer map, redesign sketch, and PR #19 invariants to preserve.
 
 ## How to resume
 
 1. Confirm PR #4 status (`mcp__github__pull_request_read --method get`).
 2. Ask the user which Atto / open item to pick up.
 3. Branch naming: `claude/<short-handle>-XXXX` off latest `main`.
-4. Run all three smoke tests before pushing:
-   - `./scripts/smoke-delegate-bg.sh` (new)
-   - `./scripts/smoke-distill.sh` (existing, guards distill Stop hook)
-   - `./scripts/smoke-ui.sh` (Go unit tests)
+4. Run all four smoke tests before pushing:
+   - `./scripts/smoke-delegate-bg.sh` (dispatcher + watcher end-to-end)
+   - `./scripts/smoke-delegate-flags.sh` (bash flag handling — Atto II rejection paths)
+   - `./scripts/smoke-distill.sh` (guards distill Stop hook)
+   - `./scripts/smoke-ui.sh` (Go unit tests — note: `TestHubFilterByTyping` is a pre-existing flake on `main`)
 5. Always create the PR as **draft**.
 
 ## Hot spots not to forget
