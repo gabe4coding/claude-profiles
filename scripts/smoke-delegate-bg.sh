@@ -369,6 +369,37 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# ---- Step 7: backward-compat — delivered.md (Atto II marker) skips ---------
+#
+# Upgrade scenario: a delegate from a previous (Atto II) session has a
+# delivered.md marker but no delivered.txt. Its bg-session-id.txt still
+# points at a state.json that is still terminal (because the supervisor's
+# state survives across upgrades). Without backward-compat, the new
+# hook would re-inject every such delegate on the first prompt after
+# upgrade. delivered.md must be treated as a skip marker.
+echo "==> Step 7: delivered.md backward-compat (upgrade scenario)"
+BC_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+BC_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$BC_DELG_ID"
+mkdir -p "$BC_DELG_DIR"
+# Same FAKE_BG_ID as Steps 1/4/5, so state.json is still terminal — if the
+# hook didn't honour delivered.md it would walk through to extract.
+echo "$FAKE_BG_ID" > "$BC_DELG_DIR/bg-session-id.txt"
+printf 'old reply from a previous session\n' > "$BC_DELG_DIR/delivered.md"
+cat > "$BC_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"old","parent_session":"$PARENT_SID","delegate_id":"$BC_DELG_ID","dir":""}
+JSON
+
+BC_HOOK_OUT=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
+# Re-injection would put "[delegate $BC_DELG_ID …]" in the output. Skip
+# means BC_DELG_ID does not appear in the hook output at all.
+if echo "$BC_HOOK_OUT" | grep -F -q "$BC_DELG_ID"; then
+  echo "FAIL: hook re-injected delegate with Atto II delivered.md marker"
+  echo "  output: $BC_HOOK_OUT"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: delivered.md (Atto II marker) treated as skip"
+fi
+
 # ---- Summary ---------------------------------------------------------------
 echo
 if [ "$FAILURES" -eq 0 ]; then

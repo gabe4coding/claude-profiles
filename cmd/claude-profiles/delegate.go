@@ -350,11 +350,19 @@ func cmdHookPromptSubmit() {
 // failure) before returning a non-empty body.
 func collectDelegateForInjection(delDir, delID string) (body, profile string) {
 	// Already delivered? Either the success marker or the error marker
-	// being present means we've already injected for this delegate.
+	// being present means we've already injected for this delegate. The
+	// Atto-II-era delivered.md is also treated as "delivered" for backward
+	// compat: without this, the first hook firing after an upgrade would
+	// re-inject every delegate from previous sessions that had only the
+	// old marker — state.json is still terminal and bg-session-id.txt is
+	// still on disk for any of them.
 	if _, err := os.Stat(filepath.Join(delDir, "delivered.txt")); err == nil {
 		return "", ""
 	}
 	if _, err := os.Stat(filepath.Join(delDir, "delivered-error.md")); err == nil {
+		return "", ""
+	}
+	if _, err := os.Stat(filepath.Join(delDir, "delivered.md")); err == nil {
 		return "", ""
 	}
 
