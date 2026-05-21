@@ -60,6 +60,10 @@ go install github.com/gabe4coding/claude-profiles/cmd/claude-profiles@latest
 
 Make sure `~/go/bin` is on your `PATH`.
 
+### Requirements
+
+- **Claude Code ≥ v2.1.146.** `/delegate` dispatches via `claude --bg`, and v2.1.146 fixed `--bg` refusing sessions whose task body starts with a slash command or skill invocation (anything like `/delegate orchestrator "/work-on-goal X"` would have failed on older versions). v2.1.144 also added bg sessions to the `/resume` picker — note that **resuming a completed bg delegate is unsupported** (silent context loss + distill bookmark drift; see `CLAUDE.md` invariants).
+
 Sanity check:
 
 ```bash
