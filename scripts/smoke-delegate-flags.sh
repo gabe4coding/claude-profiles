@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Smoke test for /delegate launch-script flag handling after Atto II.
+# Smoke test for /delegate launch-script flag handling after Atto III.
 #
-# Atto II flipped the default: bg is now the default dispatch path,
-# --legacy-tmux is the opt-in for the old tmux runner. The old --bg flag
-# and CLAUDE_PROFILES_DELEGATE_BG env var are rejected loudly so users on
-# older scripts learn about the flip instead of silently inheriting the
-# new default.
+# Atto III collapsed /delegate to a single mode (bg) and removed both the
+# Atto I opt-in flag/env (--bg, CLAUDE_PROFILES_DELEGATE_BG) and the Atto II
+# opt-in flag/env (--legacy-tmux, CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX).
+# All four are rejected loudly so users with the old surface in their
+# scripts/rc files see a clear migration message instead of silent
+# behavior changes.
 #
 # This smoke exercises the bash logic in delegateLaunchScript (the part
 # smoke-delegate-bg.sh skips because it calls _delegate-bg-dispatch
@@ -65,10 +66,10 @@ expect_rc_and_msg() {
   echo "ok: $name"
 }
 
-# Case 1: --bg flag → loud rejection, exit 2.
+# Case 1: --bg flag → loud rejection, exit 2 (Atto I opt-in removed).
 expect_rc_and_msg \
-  "rejects --bg flag with migration message" \
-  2 "bg is the default" \
+  "rejects --bg flag with Atto III migration message" \
+  2 "bg is the only mode after Atto III" \
   env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
     CLAUDE_PROFILES_RUN=1 \
     CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
@@ -88,10 +89,10 @@ expect_rc_and_msg \
     PATH="$PATH" \
     "$LAUNCH" "smoke" "task body"
 
-# Case 3: --legacy-tmux without $TMUX → exit 1 with tmux-required message.
+# Case 3: --legacy-tmux flag → loud rejection, exit 2 (Atto II opt-in removed).
 expect_rc_and_msg \
-  "rejects --legacy-tmux without tmux" \
-  1 "--legacy-tmux requires tmux" \
+  "rejects --legacy-tmux flag (tmux runner demolished)" \
+  2 "tmux runner was demolished in Atto III" \
   env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
     CLAUDE_PROFILES_RUN=1 \
     CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
@@ -99,31 +100,29 @@ expect_rc_and_msg \
     PATH="$PATH" \
     "$LAUNCH" "smoke" --legacy-tmux "task body"
 
-# Case 4: --goal with --legacy-tmux → exit 1 (incompatible — goal needs bg).
-# Set fake TMUX so the tmux-required check above passes.
+# Case 4: CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX env → loud rejection, exit 2.
 expect_rc_and_msg \
-  "rejects --goal with --legacy-tmux" \
-  1 "--goal is incompatible with --legacy-tmux" \
+  "rejects CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX env" \
+  2 "CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX is no longer honoured" \
   env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
     CLAUDE_PROFILES_RUN=1 \
     CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
-    TMUX="/tmp/fake-tmux,1,0" \
+    CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1 \
     HOME="$HOME" \
     PATH="$PATH" \
-    "$LAUNCH" "smoke" --legacy-tmux --goal "my-goal" "task body"
+    "$LAUNCH" "smoke" "task body"
 
 # Case 5: default invocation (no flags) reaches the dispatch step. Without
 # a real claude binary on PATH, `_delegate-bg-dispatch` will fail — what we
 # want to confirm is that the bash flag-handling passes through cleanly
 # (PROFILE/TASK extracted, request.json written, DELEGATE_* lines emitted)
 # before the Go layer takes over. We capture the output and check for the
-# DELEGATE_ID + DELEGATE_DIR lines that the bash side writes before
-# delegating to Go.
+# DELEGATE_ID lines that the bash side writes before delegating to Go.
 STUB_BIN_DIR="$SMOKE/stubbin"
 mkdir -p "$STUB_BIN_DIR"
 # Stub claude-profiles _delegate-bg-dispatch so we observe the bash path
-# was reached. Real binary stays available under another name for the
-# launch script's own jq/uuidgen needs.
+# was reached. Real binary stays available for the launch script's own
+# jq/uuidgen needs.
 cat > "$STUB_BIN_DIR/claude-profiles" <<EOF
 #!/usr/bin/env bash
 if [ "\$1" = "_delegate-bg-dispatch" ]; then
@@ -156,19 +155,6 @@ elif ! echo "$out" | grep -q '^STUB_BG_DISPATCHED'; then
 else
   echo "ok: default-mode invocation reaches bg dispatcher"
 fi
-
-# Case 6: CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1 without TMUX → exit 1
-# with tmux-required message (env-var form of --legacy-tmux).
-expect_rc_and_msg \
-  "env CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1 picks up legacy mode" \
-  1 "--legacy-tmux requires tmux" \
-  env -u TMUX -u CLAUDE_PROFILES_DELEGATE_BG -u CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX \
-    CLAUDE_PROFILES_RUN=1 \
-    CLAUDE_PROFILES_WRAPPER_PID="$WRAPPER_PID" \
-    CLAUDE_PROFILES_DELEGATE_LEGACY_TMUX=1 \
-    HOME="$HOME" \
-    PATH="$PATH" \
-    "$LAUNCH" "smoke" "task body"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

@@ -92,8 +92,6 @@ func main() {
 		cmdHookGuardWorktreeWrites()
 	case "_hook-stop":
 		cmdHookStop()
-	case "_delegate-runner":
-		cmdDelegateRunner(args[1:])
 	case "_delegate-bg-dispatch":
 		cmdDelegateBgDispatch(args[1:])
 	case "_delegate-bg-watcher":
