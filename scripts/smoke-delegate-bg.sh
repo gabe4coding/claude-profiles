@@ -278,6 +278,37 @@ name_value=$(awk '/^--name$/{getline; print; exit}' "$SMOKE/bg-args.log")
 expected_prefix="goal:smoke-goal | smoke-bg: echo goal smoke"
 assert_eq "$name_value" "$expected_prefix" "dispatcher applies goal prefix to --name"
 
+# ---- Step 5: dispatch with a slash-command task (v2.1.146+ regression guard) -
+#
+# Before v2.1.146, `claude --bg` refused sessions whose only input was a skill
+# or slash command. Our code passes req.Task as a positional arg unchanged; this
+# step asserts that a task starting with "/" is forwarded to claude --bg without
+# any filtering or rejection on the claude-profiles side.
+echo "==> Step 5: dispatching delegate with slash-command task"
+SLASH_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+SLASH_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$SLASH_DELG_ID"
+mkdir -p "$SLASH_DELG_DIR"
+cat > "$SLASH_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"/work-on-goal ship the feature","parent_session":"$PARENT_SID","delegate_id":"$SLASH_DELG_ID","dir":""}
+JSON
+
+"$BIN" _delegate-bg-dispatch "$SLASH_DELG_ID" >/dev/null
+
+# The stub claude always exits 0 regardless of the task content, mirroring the
+# v2.1.146+ fixed behaviour. We verify our code forwarded the task unmodified.
+slash_task_in_args=$(grep -c "^/work-on-goal" "$SMOKE/bg-args.log" || true)
+if [ "$slash_task_in_args" -ge 1 ]; then
+  echo "ok: slash-command task forwarded to claude --bg unmodified"
+else
+  echo "FAIL: slash-command task was not forwarded (or was filtered)"
+  cat "$SMOKE/bg-args.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# bg-session-id.txt must be written (dispatch succeeded).
+slash_bg_id=$(cat "$SLASH_DELG_DIR/bg-session-id.txt" 2>/dev/null | tr -d '\n')
+assert_eq "$slash_bg_id" "$FAKE_BG_ID" "slash-command dispatch writes bg-session-id.txt"
+
 # ---- Summary ---------------------------------------------------------------
 echo
 if [ "$FAILURES" -eq 0 ]; then
