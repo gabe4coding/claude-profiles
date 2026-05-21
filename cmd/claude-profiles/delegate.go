@@ -123,7 +123,7 @@ claude-profiles _delegate-bg-dispatch "$DELG_ID"
 `
 
 const delegateSlashCommand = `---
-description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook — no live progress streaming. Skill is also good when you want a deliberate "send-this-and-walk-away" pattern: the orchestrator keeps working while the delegate runs.
+description: Delegate a subtask to another profile via Claude Code Agent View (claude --bg). The result is delivered on the user's next prompt via the UserPromptSubmit hook — no live progress streaming. Good for a deliberate "send-this-and-walk-away" pattern: the orchestrator keeps working while the delegate runs.
 argument-hint: <profile-id|intent> [--dir <path>] [--goal <name>] [task...]
 allowed-tools: AskUserQuestion, Bash
 ---
@@ -393,6 +393,12 @@ func collectDelegateForInjection(delDir, delID string) (body, profile string) {
 	if bgID == "" {
 		return "", ""
 	}
+	// readBgJobState returns (zero, nil) when state.json is missing — the
+	// supervisor hasn't materialised it yet, treat as "still pending".
+	// A real read error (malformed file, truncated mid-write) collapses
+	// into the same skip path; the watcher's 30-minute timeout is the
+	// recovery — it writes dispatch-error.md so the parent eventually
+	// learns something went wrong instead of silently waiting forever.
 	state, err := readBgJobState(filepath.Join(claudeJobsDir(), bgID, "state.json"))
 	if err != nil || !isBgFirstTurnDone(state) {
 		return "", ""

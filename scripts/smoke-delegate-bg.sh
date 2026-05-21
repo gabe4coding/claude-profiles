@@ -377,7 +377,12 @@ fi
 # state survives across upgrades). Without backward-compat, the new
 # hook would re-inject every such delegate on the first prompt after
 # upgrade. delivered.md must be treated as a skip marker.
-echo "==> Step 7: delivered.md backward-compat (upgrade scenario)"
+#
+# We pair the negative assertion (old delegate must NOT re-inject) with a
+# positive control (fresh undelivered delegate in the same hook call MUST
+# inject) so this step also catches "hook always returns empty" regressions
+# — a pure negative assertion would silently pass against a broken hook.
+echo "==> Step 7: delivered.md backward-compat + positive control"
 BC_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
 BC_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$BC_DELG_ID"
 mkdir -p "$BC_DELG_DIR"
@@ -389,15 +394,36 @@ cat > "$BC_DELG_DIR/request.json" <<JSON
 {"profile":"smoke-bg","task":"old","parent_session":"$PARENT_SID","delegate_id":"$BC_DELG_ID","dir":""}
 JSON
 
+# Positive control: a brand-new undelivered delegate that *should* fire.
+# If the hook is broken end-to-end (returns empty for everything), this
+# assertion fails and the smoke catches it instead of silently passing
+# on the negative check.
+POS_DELG_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+POS_DELG_DIR="$CLAUDE_PROFILES_ROOT/delegates/$PARENT_SID/$POS_DELG_ID"
+mkdir -p "$POS_DELG_DIR"
+echo "$FAKE_BG_ID" > "$POS_DELG_DIR/bg-session-id.txt"
+cat > "$POS_DELG_DIR/request.json" <<JSON
+{"profile":"smoke-bg","task":"fresh","parent_session":"$PARENT_SID","delegate_id":"$POS_DELG_ID","dir":""}
+JSON
+
 BC_HOOK_OUT=$(echo "{\"session_id\":\"$PARENT_SID\"}" | "$BIN" _hook-prompt-submit)
-# Re-injection would put "[delegate $BC_DELG_ID …]" in the output. Skip
-# means BC_DELG_ID does not appear in the hook output at all.
+
+# Negative: BC_DELG_ID must NOT appear (delivered.md → skip).
 if echo "$BC_HOOK_OUT" | grep -F -q "$BC_DELG_ID"; then
   echo "FAIL: hook re-injected delegate with Atto II delivered.md marker"
   echo "  output: $BC_HOOK_OUT"
   FAILURES=$((FAILURES + 1))
 else
   echo "ok: delivered.md (Atto II marker) treated as skip"
+fi
+
+# Positive: POS_DELG_ID must appear (hook is processing entries).
+if echo "$BC_HOOK_OUT" | grep -F -q "$POS_DELG_ID"; then
+  echo "ok: positive control — fresh delegate injected (hook is alive)"
+else
+  echo "FAIL: positive control — hook did not inject fresh delegate"
+  echo "  output: $BC_HOOK_OUT"
+  FAILURES=$((FAILURES + 1))
 fi
 
 # ---- Summary ---------------------------------------------------------------

@@ -311,14 +311,27 @@ func cmdDelegateBgWatcher(args []string) {
 	for time.Now().Before(deadline) {
 		// If the parent hook has already delivered, exit early — no point
 		// keeping the slot warm. Both markers (success / error) signal a
-		// terminal hook interaction.
+		// terminal hook interaction. Skip `claude stop` when the supervisor
+		// already knows the session is stopped: state was the hook's signal
+		// to deliver, and if it reads "stopped" we'd just be spawning a
+		// subprocess for a no-op.
+		hookDeliveredSuccess := false
+		hookDeliveredError := false
 		if _, err := os.Stat(filepath.Join(dir, "delivered.txt")); err == nil {
-			logf("delivered.txt exists, exiting")
-			stopBgSession(bgID, logf)
-			return
+			hookDeliveredSuccess = true
+		} else if _, err := os.Stat(filepath.Join(dir, "delivered-error.md")); err == nil {
+			hookDeliveredError = true
 		}
-		if _, err := os.Stat(filepath.Join(dir, "delivered-error.md")); err == nil {
-			logf("delivered-error.md exists, exiting")
+		if hookDeliveredSuccess || hookDeliveredError {
+			marker := "delivered.txt"
+			if hookDeliveredError {
+				marker = "delivered-error.md"
+			}
+			if cur, err := readBgJobState(statePath); err == nil && cur.State == "stopped" {
+				logf("%s exists and session already stopped, exiting", marker)
+				return
+			}
+			logf("%s exists, stopping and exiting", marker)
 			stopBgSession(bgID, logf)
 			return
 		}
@@ -339,8 +352,11 @@ func cmdDelegateBgWatcher(args []string) {
 		time.Sleep(bgWatcherPollInterval)
 	}
 
-	// Timeout. Stop the session and record a dispatch error so the parent
-	// gets *something* on its next prompt instead of an indefinite stall.
+	// Timeout. If we got here, the hook never delivered (otherwise the
+	// early-exit branch at the top of the loop would have caught
+	// delivered.txt / delivered-error.md and bailed). Stop the session
+	// and record a dispatch error so the parent gets *something* on its
+	// next prompt instead of an indefinite stall.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
 	writeDispatchError(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
