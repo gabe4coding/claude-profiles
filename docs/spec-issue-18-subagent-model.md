@@ -2,16 +2,29 @@
 
 ## Context
 
-Claude Code v2.1.146 fixed `CLAUDE_CODE_SUBAGENT_MODEL` not being forwarded to child
-processes in multi-agent sessions. Before that fix, setting the env var only affected
-the top-level process; child processes spawned via `claude --bg` or as subagents did
-not inherit it.
+Claude Code v2.1.146 fixed `CLAUDE_CODE_SUBAGENT_MODEL` not being forwarded to direct
+child processes in multi-agent sessions. Before that fix, setting the env var only
+affected the top-level process; child processes spawned via `claude --bg` or as subagents
+did not inherit it.
+
+Claude Code v2.1.147 extended the fix to **agent-team teammate processes** — peer-level
+processes spawned by agent teams, which are a distinct propagation path from direct
+children. Delegates that internally spin up agent teams therefore require v2.1.147+ for
+full `_subagent_model` coverage.
 
 `cmdDelegateBgDispatch` already controls the **delegate's own model** via the profile's
 `_settings.model` field (and branches on `"haiku"` for permission mode). But the model
 used by **subagents the delegate itself spawns** was previously uncontrollable. With the
-v2.1.146 fix, injecting `CLAUDE_CODE_SUBAGENT_MODEL` into the delegate's subprocess env
-now reliably pins the model for any second-level subagents.
+two-phase fix (v2.1.146 for children, v2.1.147 for teammates), injecting
+`CLAUDE_CODE_SUBAGENT_MODEL` into the delegate's subprocess env now reliably pins the
+model for all second-level subagents.
+
+### Effective minimum versions
+
+| Workload | Minimum Claude Code |
+|---|---|
+| Delegate spawns direct subagents only | v2.1.146 |
+| Delegate spawns agent teams (peer-level processes) | v2.1.147 |
 
 ## Scope
 
@@ -123,5 +136,6 @@ warrants it.
 - Must not be implemented on `cmdDelegateRunner` (tmux path) — that code is
   scheduled for Atto III demolition.
 - Safe to implement any time after Atto I ships; does not block Atto II/III.
-- Requires Claude Code >= v2.1.146 on the user's machine to take effect; older
-  versions silently ignore `CLAUDE_CODE_SUBAGENT_MODEL` in child processes.
+- Requires Claude Code >= v2.1.146 for direct child propagation; >= v2.1.147 for
+  full agent-team teammate coverage. Older versions silently ignore
+  `CLAUDE_CODE_SUBAGENT_MODEL` in child/teammate processes.

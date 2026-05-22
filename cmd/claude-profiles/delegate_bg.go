@@ -225,8 +225,9 @@ func cmdDelegateBgDispatch(args []string) {
 	// merges profile.json + prefs via loadProfileAt) so the value can be set
 	// either in profile.json _subagent_model OR in prefs — the edit TUI writes
 	// through prefs but power users can pin it directly in the profile file.
-	// CLAUDE_CODE_SUBAGENT_MODEL only reliably reaches child processes since
-	// Claude Code v2.1.146; on older versions this is a no-op. Append AFTER
+	// CLAUDE_CODE_SUBAGENT_MODEL reaches direct child processes since v2.1.146;
+	// it extends to agent-team teammate processes since v2.1.147. On older
+	// versions this is a no-op. Append AFTER
 	// CLAUDE_PROFILES_DELEGATE so the distill guard ordering invariant in
 	// CLAUDE.md is preserved.
 	if p.SubagentModel != "" {
