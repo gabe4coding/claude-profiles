@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""SessionStart hook: surface the curated .kb/ to the assistant if one exists.
+"""SessionStart hook: surface every curated .kb/ relevant to this session.
 
 Fires once per Claude Code session start when the kb-curator plugin is
-loaded. Emits a JSON object on stdout with hookSpecificOutput.additionalContext
-that tells the assistant a curated knowledge base is available for this
-repo, plus an inline copy of the top-level INDEX.md and a head of the
-tag index (full file lives at .kb/INDEX-by-tag.md for on-demand read).
+loaded. Emits a JSON object on stdout with hookSpecificOutput.additionalContext.
+
+Two KBs may be surfaced, in order:
+
+1. LOCAL KB — resolved for the session's cwd:
+   priority KB_TAIL_DIR → CLAUDE_PROJECT_DIR/.kb → main-repo-root/.kb.
+   Full content: pointer + INDEX.md + active .focus lens + first ~30 lines
+   of INDEX-by-tag.md.
+
+2. PERSONAL CROSS-PROJECT KB — discovered via the canonical
+   `$HOME/.kb/.kb-tail.env` file (or `$KB_TAIL_ENV_FILE` override) that
+   `kb-global` writes. If that file declares a KB_TAIL_DIR distinct from
+   the local one AND that location has an INDEX.md, surface it as a
+   compact secondary block (pointer + INDEX only). This lets a normal
+   non-curator session running in some repo also know that the user's
+   personal cross-project KB is queryable on demand.
 
 Bail conditions (silent — print nothing, exit 0):
-  - no git repo and no KB_TAIL_DIR override
-  - .kb/INDEX.md missing (kb-curator hasn't curated anything yet)
-
-KB root resolution mirrors kb-tail.py / kb-index.sh:
-  1. KB_TAIL_DIR — explicit override (global personal KB or any decoupled use)
-  2. CLAUDE_PROJECT_DIR — set by Claude Code when the hook fires
-  3. main repo root via `git rev-parse --git-common-dir`
-
-The tag index head is truncated to ~30 lines to bound the per-session
-context cost. The assistant can read the full file when it needs to.
+  - no local KB resolvable (no git, no CLAUDE_PROJECT_DIR, no env) AND
+    no global KB declared either.
 
 Stdlib only. Python 3.8+.
 """
@@ -51,17 +55,8 @@ def main_repo_root_from_cwd() -> str | None:
     return str(p.parent.resolve())
 
 
-def resolve_kb_dir() -> Path | None:
-    """Resolve the KB directory itself (the dir containing INDEX.md,
-    decisions/, fixes/, sessions/, inbox/, .focus).
-
-    Priority:
-      1. KB_TAIL_DIR — IS the kb dir directly. No `.kb` appended; the
-         user picked an explicit path.
-      2. CLAUDE_PROJECT_DIR — project root set by Claude Code for hooks;
-         append `.kb` (project-mode convention).
-      3. main repo root via git — append `.kb`.
-    """
+def resolve_local_kb_dir() -> Path | None:
+    """KB for the session's cwd. See module docstring for priority."""
     if env := os.environ.get("KB_TAIL_DIR"):
         return Path(env)
     if env := os.environ.get("CLAUDE_PROJECT_DIR"):
@@ -72,15 +67,48 @@ def resolve_kb_dir() -> Path | None:
     return Path(rr) / ".kb"
 
 
-def read_active_lens(kb_dir: Path) -> str:
-    """Extract a curator lens from <kb>/.focus.
+def resolve_global_kb_dir() -> Path | None:
+    """Read the canonical env file written by `kb-global` and extract
+    KB_TAIL_DIR — the user's declared personal cross-project KB.
 
-    Returns the non-comment / non-empty content joined as a single block,
-    or "" when no active lens (file missing, blank, or only comments, or
-    the literal word `none`). Always read from the resolved KB root —
-    callers must NOT rely on the agent's cwd, which in global mode points
-    elsewhere than the KB itself.
+    File location priority:
+      1. $KB_TAIL_ENV_FILE  — explicit override (also honored by the
+         Monitor wrapper, kept consistent here)
+      2. $HOME/.kb/.kb-tail.env  — canonical default
     """
+    candidates: list[Path] = []
+    if v := os.environ.get("KB_TAIL_ENV_FILE"):
+        candidates.append(Path(v))
+    candidates.append(Path.home() / ".kb" / ".kb-tail.env")
+    for env_file in candidates:
+        if not env_file.is_file():
+            continue
+        try:
+            raw = env_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if not (line.startswith("KB_TAIL_DIR=") or line.startswith("KB_TAIL_DIR ")):
+                continue
+            _, _, value = line.partition("=")
+            value = value.strip().strip("\"'")
+            # Expand $HOME / ${HOME} — common in env files written by hand.
+            home = str(Path.home())
+            value = value.replace("${HOME}", home).replace("$HOME", home)
+            if value:
+                return Path(value)
+        # File found but no KB_TAIL_DIR line — stop searching further
+        # candidates (the user picked this file, leave it authoritative).
+        return None
+    return None
+
+
+def read_active_lens(kb_dir: Path) -> str:
+    """Extract a curator lens from <kb>/.focus. Returns "" when no active
+    lens (file missing, blank, only comments, or literal `none`)."""
     focus = kb_dir / ".focus"
     if not focus.is_file():
         return ""
@@ -99,7 +127,9 @@ def read_active_lens(kb_dir: Path) -> str:
     return "\n".join(lines).strip()
 
 
-def build_context(kb_dir: Path) -> str:
+def build_local_block(kb_dir: Path) -> str:
+    """Full-detail block for the session-local KB: intro + INDEX + lens +
+    tag index head + retrieval hint."""
     index = kb_dir / "INDEX.md"
     parts = [
         f"A curated knowledge base exists at `{kb_dir}/`. Consult it before"
@@ -129,27 +159,61 @@ def build_context(kb_dir: Path) -> str:
         head_lines = by_tag.read_text(encoding="utf-8").splitlines()[:TAG_INDEX_HEAD_LINES]
         parts.append("")
         parts.append("### Tag index (head)")
-        parts.append("Full list at `.kb/INDEX-by-tag.md`. Use these tag names"
+        parts.append("Full list at `INDEX-by-tag.md`. Use these tag names"
                      " when reasoning about coverage.")
         parts.append("")
         parts.extend(head_lines)
     parts.append("")
     parts.append(
-        "When searching the KB: scan `.kb/INDEX.md` for buckets, then"
-        " `.kb/INDEX-by-tag.md` for cross-bucket topics, then open the"
-        " specific entry. Cross-links are written as `[[entry-slug]]` —"
-        " resolve them by basename under the matching bucket dir."
+        "When searching: scan `INDEX.md` for buckets, then `INDEX-by-tag.md`"
+        " for cross-bucket topics, then open the specific entry. Cross-links"
+        " are written as `[[entry-slug]]` — resolve them by basename under"
+        " the matching bucket dir."
     )
     return "\n".join(parts)
 
 
+def build_global_block(kb_dir: Path) -> str:
+    """Compact block for the personal cross-project KB. Just enough for
+    the agent to know it exists and how to dive in — full content is read
+    on demand to keep the per-session token cost bounded."""
+    index = kb_dir / "INDEX.md"
+    parts = [
+        f"### Personal cross-project KB at `{kb_dir}/`",
+        "",
+        "The user maintains a personal wiki here that aggregates curated"
+        " entries from work across every project on this machine — patterns"
+        " they reuse, lessons learned debugging, references to external"
+        " systems, durable project state, and chronological work history."
+        " Read it when the user asks about cross-project knowledge, prior"
+        " patterns, or what they did in another repo.",
+        "",
+        index.read_text(encoding="utf-8"),
+        "",
+        "Cross-bucket topics live in `INDEX-by-tag.md` (read on demand).",
+    ]
+    return "\n".join(parts)
+
+
 def main() -> int:
-    kb_dir = resolve_kb_dir()
-    if kb_dir is None:
+    blocks: list[str] = []
+
+    local = resolve_local_kb_dir()
+    if local is not None and (local / "INDEX.md").is_file():
+        blocks.append(build_local_block(local))
+
+    global_kb = resolve_global_kb_dir()
+    if (
+        global_kb is not None
+        and global_kb != local
+        and (global_kb / "INDEX.md").is_file()
+    ):
+        blocks.append(build_global_block(global_kb))
+
+    if not blocks:
         return 0
-    if not (kb_dir / "INDEX.md").is_file():
-        return 0
-    context = build_context(kb_dir)
+
+    context = "\n\n---\n\n".join(blocks)
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

@@ -520,5 +520,64 @@ echo "OK: SessionStart skipped the lens block when .focus is literal 'none'"
 
 rm -rf "$ss_kb"
 
+# --- 10. SessionStart also surfaces the PERSONAL cross-project KB. ------
+#         When ~/.kb/.kb-tail.env (or $KB_TAIL_ENV_FILE) declares a
+#         KB_TAIL_DIR distinct from the session's local KB, the hook
+#         injects a compact "Personal cross-project KB" block alongside
+#         the local one. Non-curator sessions in any repo can then
+#         consult the user's accumulated wiki on demand.
+local_kb=$(mktemp -d -t kbtail-local)
+global_kb2=$(mktemp -d -t kbtail-global2)
+env_file="$tmpdir/.kb-tail.env"
+echo "## local kb" > "$local_kb/INDEX.md"
+echo "## global personal kb" > "$global_kb2/INDEX.md"
+cat > "$env_file" <<EOF
+KB_TAIL_DIR="$global_kb2"
+EOF
+
+env -i HOME="$HOME" PATH="$PATH" \
+    KB_TAIL_DIR="$local_kb" \
+    KB_TAIL_ENV_FILE="$env_file" \
+    python3 "$repo_root/plugins/kb-curator/scripts/session-start.py" \
+    > "$tmpdir/.ss-dual.json"
+if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+ctx = d["hookSpecificOutput"]["additionalContext"]
+assert "local kb" in ctx, "local KB block missing"
+assert "Personal cross-project KB" in ctx, "global KB block missing"
+assert "global personal kb" in ctx, "global KB INDEX content missing"
+' "$tmpdir/.ss-dual.json"; then
+  echo "FAIL: SessionStart did not surface BOTH local + global KBs" >&2
+  cat "$tmpdir/.ss-dual.json" >&2
+  exit 1
+fi
+echo "OK: SessionStart surfaced both local and personal-cross-project KBs"
+
+# 10b. Same env file but local == global → secondary skipped (no
+# duplication when the user is launching the curator on the global KB
+# itself, which is the kb-global path).
+env -i HOME="$HOME" PATH="$PATH" \
+    KB_TAIL_DIR="$global_kb2" \
+    KB_TAIL_ENV_FILE="$env_file" \
+    python3 "$repo_root/plugins/kb-curator/scripts/session-start.py" \
+    > "$tmpdir/.ss-same.json"
+if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+ctx = d["hookSpecificOutput"]["additionalContext"]
+# Only ONE intro line about the curated KB should appear.
+n = ctx.count("A curated knowledge base exists at")
+assert n == 1, f"expected exactly 1 KB intro, got {n}"
+assert "Personal cross-project KB" not in ctx, "global block injected redundantly"
+' "$tmpdir/.ss-same.json"; then
+  echo "FAIL: SessionStart duplicated the KB block when local == global" >&2
+  cat "$tmpdir/.ss-same.json" >&2
+  exit 1
+fi
+echo "OK: SessionStart skips the global block when local == global"
+
+rm -rf "$local_kb" "$global_kb2"
+
 echo
 echo "smoke-kb-tail: ALL PASSED"
