@@ -26,16 +26,25 @@ count_inbox() {
   echo "${#files[@]}"
 }
 
-BIN="${BIN:-$HOME/.local/bin/claude-profiles}"
-if [[ ! -x "$BIN" ]]; then
-  echo "smoke-kb-tail: binary not found at $BIN — run go build first" >&2
+repo_root=$(git rev-parse --show-toplevel)
+SCRIPT="${KB_TAIL_SCRIPT:-$repo_root/plugins/kb-curator/scripts/kb-tail.py}"
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "smoke-kb-tail: script not found at $SCRIPT" >&2
   exit 2
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "smoke-kb-tail: python3 not in PATH" >&2
+  exit 2
+fi
+# All "${BIN[@]}" invocations below run the Python script.
+BIN=(python3 "$SCRIPT")
 
 tmpdir=$(mktemp -d -t kbtail)
 transcripts_dir=""
 wt_dir=""
 wt_transcripts_dir=""
+global_kb=""
+global_transcripts_dir=""
 
 cleanup() {
   set +e
@@ -55,6 +64,12 @@ cleanup() {
   fi
   if [[ -n "$wt_transcripts_dir" && -d "$wt_transcripts_dir" ]]; then
     rm -rf "$wt_transcripts_dir"
+  fi
+  if [[ -n "$global_kb" && -d "$global_kb" ]]; then
+    rm -rf "$global_kb"
+  fi
+  if [[ -n "$global_transcripts_dir" && -d "$global_transcripts_dir" ]]; then
+    rm -rf "$global_transcripts_dir"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -80,7 +95,7 @@ cat > "$jsonl" <<'EOF'
 EOF
 
 # --- 2. firstScan: should NOT emit ---------------------------------------
-"$BIN" kb-tail > "$tmpdir/.kb-tail.stdout" 2> "$tmpdir/.kb-tail.stderr" &
+"${BIN[@]}" > "$tmpdir/.kb-tail.stdout" 2> "$tmpdir/.kb-tail.stderr" &
 KBPID=$!
 sleep 3
 
@@ -134,7 +149,7 @@ kill "$KBPID" 2>/dev/null || true
 wait "$KBPID" 2>/dev/null || true
 KBPID=""
 
-"$BIN" kb-tail > "$tmpdir/.kb-tail2.stdout" 2> "$tmpdir/.kb-tail2.stderr" &
+"${BIN[@]}" > "$tmpdir/.kb-tail2.stdout" 2> "$tmpdir/.kb-tail2.stderr" &
 KBPID=$!
 sleep 3
 
@@ -167,7 +182,7 @@ cat > "$curator_jsonl" <<'EOF'
 {"type":"agent-setting","agentSetting":"kb-curator:kb-curator","sessionId":"ffffffff-cccc-dddd-eeee-222222222222"}
 EOF
 
-"$BIN" kb-tail --self-agent kb-curator > "$tmpdir/.kb-tail3.stdout" 2> "$tmpdir/.kb-tail3.stderr" &
+"${BIN[@]}" --self-agent kb-curator > "$tmpdir/.kb-tail3.stdout" 2> "$tmpdir/.kb-tail3.stderr" &
 KBPID=$!
 sleep 3
 
@@ -217,7 +232,7 @@ EOF
 # Launch kb-tail with cwd inside the worktree. State should resolve back
 # to <main>/.kb/inbox/.kb-tail-state.json, and the worktree transcript
 # should be picked up by listWorktrees() each tick.
-( cd "$wt_dir" && "$BIN" kb-tail > "$tmpdir/.kb-tail4.stdout" 2> "$tmpdir/.kb-tail4.stderr" ) &
+( cd "$wt_dir" && "${BIN[@]}" > "$tmpdir/.kb-tail4.stdout" 2> "$tmpdir/.kb-tail4.stderr" ) &
 KBPID=$!
 sleep 3
 
@@ -230,13 +245,13 @@ fi
 echo "OK: worktree spawn did not create .kb/ under the worktree"
 
 # Verify startup log shows MAIN repo root (not worktree path).
-if ! grep -qE "kb-tail: repo=$canon " "$tmpdir/.kb-tail4.stderr"; then
+if ! grep -qE "kb-tail: mode=repo kb=$canon " "$tmpdir/.kb-tail4.stderr"; then
   echo "FAIL: worktree spawn did not resolve to main repo root" >&2
-  echo "      expected 'repo=$canon ' in stderr; got:" >&2
+  echo "      expected 'mode=repo kb=$canon ' in stderr; got:" >&2
   cat "$tmpdir/.kb-tail4.stderr" >&2
   exit 1
 fi
-echo "OK: worktree spawn resolved repo=$canon (main root)"
+echo "OK: worktree spawn resolved kb=$canon (main root)"
 
 # Append end_turn to the worktree's transcript: event must land in the
 # MAIN inbox (count goes 2 → 3).
@@ -253,6 +268,81 @@ if [[ "$count" != "3" ]]; then
   exit 1
 fi
 echo "OK: worktree transcript event landed in main .kb/inbox"
+
+# --- 7. Global mode: --scan-all-projects + --kb-dir captures any -----------
+#         project's transcript into one personal KB, skips git ops, and
+#         stamps source_cwd on every event.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+
+global_kb=$(mktemp -d -t kbtail-global)
+# A brand-new fake project, encoded path under ~/.claude/projects.
+fake_project="/tmp/kbtail-fake-project-$$"
+fake_enc=$(printf '%s' "$fake_project" | sed 's|[/.]|-|g')
+global_transcripts_dir="$HOME/.claude/projects/$fake_enc"
+mkdir -p "$global_transcripts_dir"
+
+gl_session_id="deadbeef-5555-6666-7777-888888888888"
+gl_jsonl="$global_transcripts_dir/$gl_session_id.jsonl"
+# Seed with a record carrying cwd (Claude Code writes cwd into nearly every
+# record). kb-tail's readTranscriptCwd should pick this up on first sight.
+cat > "$gl_jsonl" <<EOF
+{"type":"attachment","cwd":"$fake_project","sessionId":"deadbeef-5555-6666-7777-888888888888","uuid":"a1","timestamp":"2026-05-22T13:00:00Z"}
+EOF
+
+# Launch in global mode. cwd can be anything (e.g. canon main repo); the
+# KB destination is --kb-dir, not derived from git.
+( cd "$canon" && "${BIN[@]}" --kb-dir "$global_kb" --scan-all-projects --self-agent kb-curator > "$tmpdir/.kb-tail5.stdout" 2> "$tmpdir/.kb-tail5.stderr" ) &
+KBPID=$!
+sleep 3
+
+# Verify startup announced global mode + correct kb path.
+if ! grep -qE "kb-tail: mode=global kb=$global_kb " "$tmpdir/.kb-tail5.stderr"; then
+  echo "FAIL: global mode did not announce kb=$global_kb" >&2
+  cat "$tmpdir/.kb-tail5.stderr" >&2
+  exit 1
+fi
+echo "OK: global mode startup announced kb=$global_kb"
+
+# Append an end_turn — should produce one stop event in the global inbox.
+cat >> "$gl_jsonl" <<EOF
+{"type":"assistant","sessionId":"deadbeef-5555-6666-7777-888888888888","uuid":"a2","timestamp":"2026-05-22T13:01:00Z","cwd":"$fake_project","message":{"stop_reason":"end_turn"}}
+EOF
+sleep 5
+
+gl_count=$(count_inbox "$global_kb/.kb/inbox")
+if [[ "$gl_count" != "1" ]]; then
+  echo "FAIL: global mode expected 1 inbox file, got $gl_count" >&2
+  ls -la "$global_kb/.kb/inbox" >&2 || true
+  cat "$tmpdir/.kb-tail5.stderr" >&2
+  exit 1
+fi
+echo "OK: global mode wrote 1 stop event into $global_kb/.kb/inbox"
+
+# Verify source_cwd is populated with the real cwd (not the encoded form).
+gl_event=$(ls "$global_kb/.kb/inbox"/*.json | head -1)
+if ! grep -q "\"source_cwd\": \"$fake_project\"" "$gl_event"; then
+  echo "FAIL: source_cwd missing or wrong in $gl_event" >&2
+  cat "$gl_event" >&2
+  exit 1
+fi
+echo "OK: source_cwd=$fake_project recorded on event"
+
+# Make a commit on the main repo: in global mode kb-tail must skip git
+# ops entirely, so no commit event should land in the global inbox.
+echo "global mode commit-skip" > "$canon/skip.txt"
+git -C "$canon" add skip.txt
+git -C "$canon" -c user.email=t@t -c user.name=t commit -m "skip-in-global" -q
+sleep 5
+
+gl_count_after=$(count_inbox "$global_kb/.kb/inbox")
+if [[ "$gl_count_after" != "1" ]]; then
+  echo "FAIL: global mode emitted commit events ($((gl_count_after - 1)) extra) — should skip git" >&2
+  ls -la "$global_kb/.kb/inbox" >&2
+  exit 1
+fi
+echo "OK: global mode skipped git commit watching"
 
 echo
 echo "smoke-kb-tail: ALL PASSED"

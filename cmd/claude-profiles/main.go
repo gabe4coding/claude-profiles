@@ -98,8 +98,6 @@ func main() {
 		cmdDelegateBgWatcher(args[1:])
 	case "_delegate-jsonl":
 		cmdDelegateLinkScanPath(args[1:])
-	case "kb-tail":
-		cmdKbTail(args[1:])
 	case "_install-wrapper-plugin":
 		// Testing hook: install the wrapper plugin's commands/ + scripts/
 		// without starting a full claude-profiles run session. Used by
