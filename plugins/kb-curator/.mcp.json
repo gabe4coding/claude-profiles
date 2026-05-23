@@ -1,0 +1,4 @@
+{
+  "_comment": "Intentionally empty. Combined with --strict-mcp-config (which claude-profiles passes whenever this file is present), this suppresses ALL native MCP discovery — the curator inherits zero MCPs from the user's global settings. The kb-curator agent only needs Read/Write/Edit/Bash + git; the dozens of MCP tool schemas users typically have configured (Amplitude, Datadog, Notion, Jira, …) would otherwise fill the haiku context window for no benefit. Add servers here only if a future curator iteration genuinely needs MCP access.",
+  "mcpServers": {}
+}

@@ -68,6 +68,7 @@ When this plugin is loaded, a SessionStart hook (`scripts/session-start.py`) che
 
 ## Files
 
+- `.mcp.json` — intentionally empty. Suppresses native MCP discovery via `--strict-mcp-config` so the curator inherits zero MCPs from the user's global settings; the agent only needs Read/Write/Edit/Bash + git.
 - `agents/kb-curator.md` — orchestrator agent prompt.
 - `skills/kb/SKILL.md` — writes `.kb/{decisions,fixes,sessions}/` entries.
 - `skills/memory/SKILL.md` — routes behavioral context across the five memory surfaces.
