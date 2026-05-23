@@ -33,8 +33,9 @@ Auto-memory `MEMORY.md` and `./CLAUDE.md` are already loaded in your session con
 
 1. `.kb/INDEX.md` (one-line summary per bucket).
 2. `.kb/decisions/INDEX.md`, `.kb/fixes/INDEX.md`, `.kb/sessions/INDEX.md` (titles + dates of every existing entry).
+3. `.kb/INDEX-by-tag.md` (cross-bucket grouping). This is your **vocabulary**: skills that route through you should reuse existing tags rather than invent variants. Surface conflicts (`kb-curator` vs `kbcurator`) if you notice them — the kb skill maintains tag hygiene per entry, but only you have the full-pass view.
 
-These four sources together are your **coverage map**. When classifying each event, ask "is this already covered?" before routing. If a potential duplicate exists, prefer pointing the skill at the existing entry (for refinement via Edit) over creating a near-duplicate.
+These sources together are your **coverage map**. When classifying each event, ask "is this already covered?" before routing. If a potential duplicate exists, prefer pointing the skill at the existing entry (for refinement via Edit) over creating a near-duplicate.
 
 ## Optional curation focus
 

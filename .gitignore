@@ -17,4 +17,5 @@
 # hook on every curator turn — tracking them adds diff noise without value.
 /.kb/inbox/
 /.kb/INDEX.md
+/.kb/INDEX-by-tag.md
 /.kb/*/INDEX.md

@@ -19,11 +19,20 @@
 set -uo pipefail
 shopt -s nullglob
 
-repo_root="${CLAUDE_PROJECT_DIR:-}"
-if [[ -z "$repo_root" ]]; then
-  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# KB root resolution priority:
+#   1. KB_TAIL_DIR — explicit override (global mode personal KB, or any
+#      caller that wants kb-tail / kb-index decoupled from git auto-detect)
+#   2. CLAUDE_PROJECT_DIR — set by Claude Code when a hook fires; equals
+#      the cwd the session was launched from
+#   3. git rev-parse --show-toplevel — fallback for direct invocation
+kb_root="${KB_TAIL_DIR:-}"
+if [[ -z "$kb_root" ]]; then
+  kb_root="${CLAUDE_PROJECT_DIR:-}"
 fi
-kb="$repo_root/.kb"
+if [[ -z "$kb_root" ]]; then
+  kb_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+fi
+kb="$kb_root/.kb"
 [[ -d "$kb" ]] || exit 0
 
 generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -106,6 +115,85 @@ for spec in "decisions|Decisions" "fixes|Fixes" "sessions|Sessions"; do
   [[ -n "$line" ]] && summary+="$line"$'\n'
 done
 
+# build_tag_index — writes .kb/INDEX-by-tag.md grouping every entry by
+# the values of its frontmatter `tags:` array. Inline-array form only:
+#   tags: [a, b, c]
+# Block-list form (`tags:\n  - a\n  - b`) is intentionally not parsed —
+# the kb SKILL prompt mandates the inline form, and parsing both would
+# double the bash complexity for no real gain. Empty / missing tags →
+# entry simply doesn't appear in this index.
+#
+# The output exists primarily as a *tag-reuse vocabulary* for the kb
+# SKILL and for the SessionStart hook to inject. The curator agent is
+# instructed to read this before assigning tags to new entries; without
+# it tag names drift (kbcurator / kb-curator / kb_curator) and the index
+# becomes useless.
+build_tag_index() {
+  local out="$kb/INDEX-by-tag.md"
+  local rows=()  # "tag<TAB>bucket/basename<TAB>title"
+
+  local bucket dir files f base title tags_line t
+  for bucket in decisions fixes sessions; do
+    dir="$kb/$bucket"
+    [[ -d "$dir" ]] || continue
+    files=("$dir"/*.md)
+    [[ ${#files[@]} -eq 0 ]] && continue
+    for f in "${files[@]}"; do
+      base=$(basename "$f")
+      [[ "$base" == "INDEX.md" ]] && continue
+      title=$(awk '/^# / { sub(/^# /, ""); print; exit }' "$f" 2>/dev/null || true)
+      [[ -z "$title" ]] && title="${base%.md}"
+      # Pull the first `tags:` line that appears inside the YAML
+      # frontmatter (between the first two `---` markers).
+      tags_line=$(awk '/^---$/{c++; next} c==1 && /^tags:/{print; exit}' "$f" 2>/dev/null || true)
+      [[ -z "$tags_line" ]] && continue
+      # Strip `tags:`, surrounding whitespace, and `[ ... ]`.
+      tags_line=$(printf '%s' "$tags_line" | sed -E 's/^tags:[[:space:]]*\[?//; s/\]?[[:space:]]*$//')
+      IFS=',' read -ra _tag_arr <<<"$tags_line"
+      for t in "${_tag_arr[@]}"; do
+        # Trim leading/trailing whitespace + any surrounding quotes.
+        t="${t#"${t%%[![:space:]]*}"}"
+        t="${t%"${t##*[![:space:]]}"}"
+        t="${t#\"}"; t="${t%\"}"
+        t="${t#\'}"; t="${t%\'}"
+        [[ -z "$t" ]] && continue
+        rows+=("$t"$'\t'"$bucket/$base"$'\t'"$title")
+      done
+    done
+  done
+
+  if [[ ${#rows[@]} -eq 0 ]]; then
+    [[ -f "$out" ]] && rm -f "$out"
+    return 0
+  fi
+
+  local sorted
+  sorted=$(printf '%s\n' "${rows[@]}" | LC_ALL=C sort)
+
+  local tmp="$out.tmp.$$"
+  {
+    echo "# Tags"
+    echo
+    echo "_Auto-generated $generated_at. Do not edit by hand._"
+    echo "_Reuse these tags when curating new entries. New tag = only when no existing one fits._"
+    echo
+    local last_tag=""
+    local tag path title_field
+    while IFS=$'\t' read -r tag path title_field; do
+      if [[ "$tag" != "$last_tag" ]]; then
+        [[ -n "$last_tag" ]] && echo
+        echo "## $tag"
+        echo
+        last_tag="$tag"
+      fi
+      echo "- [$title_field]($path)"
+    done <<<"$sorted"
+  } > "$tmp"
+  mv "$tmp" "$out"
+}
+
+build_tag_index
+
 # Root meta-index. Always rewritten so the timestamp tracks the run.
 root="$kb/INDEX.md"
 root_tmp="$root.tmp.$$"
@@ -121,6 +209,9 @@ root_tmp="$root.tmp.$$"
       [[ -z "$count" ]] && continue
       echo "- [$human]($bucket/INDEX.md) — $count entr$([[ $count -eq 1 ]] && echo y || echo ies)"
     done <<<"$summary"
+    if [[ -f "$kb/INDEX-by-tag.md" ]]; then
+      echo "- [Tags](INDEX-by-tag.md) — cross-bucket index, reuse before inventing"
+    fi
   fi
 } > "$root_tmp"
 mv "$root_tmp" "$root"

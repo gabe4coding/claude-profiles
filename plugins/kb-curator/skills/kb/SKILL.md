@@ -40,6 +40,8 @@ If you decide to curate:
    ---
    ```
 
+   **Tags**: use the inline `[a, b, c]` form (the parser is one-line by design). Before assigning, **read `.kb/INDEX-by-tag.md`** and reuse existing tags whenever one fits — drift between `kb-curator` / `kbcurator` / `kb_curator` makes the index useless. Invent a new tag ONLY when no existing one captures the concept. Aim for 2–4 tags per entry: one bucket-domain tag (e.g. `kb-curator`, `delegate`, `distill`), one technical surface (`hooks`, `monitors`, `mcp`), and 0–2 cross-cutting concerns (`security`, `ux`, `self-loop`).
+
 4. **Body** — terse, 2-6 sentences. State the thing, not the journey. For fixes, end with a "How to avoid next time" line. For decisions, end with "Related: [[…]]" when applicable.
 
 ## Report
