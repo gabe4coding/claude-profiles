@@ -329,13 +329,13 @@ fi
 echo "OK: worktree spawn did not create .kb/ under the worktree"
 
 # Verify startup log shows MAIN repo root (not worktree path).
-if ! grep -qE "kb-tail: mode=repo kb=$canon " "$tmpdir/.kb-tail4.stderr"; then
+if ! grep -qE "kb-tail: mode=repo kb=$canon/.kb " "$tmpdir/.kb-tail4.stderr"; then
   echo "FAIL: worktree spawn did not resolve to main repo root" >&2
-  echo "      expected 'mode=repo kb=$canon ' in stderr; got:" >&2
+  echo "      expected 'mode=repo kb=$canon/.kb ' in stderr; got:" >&2
   cat "$tmpdir/.kb-tail4.stderr" >&2
   exit 1
 fi
-echo "OK: worktree spawn resolved kb=$canon (main root)"
+echo "OK: worktree spawn resolved kb=$canon/.kb (main root)"
 
 # Append end_turn to the worktree's transcript: event must land in the
 # MAIN inbox (count goes 2 → 3).
@@ -382,7 +382,7 @@ KBPID=$!
 sleep 3
 
 # Verify startup announced global mode + correct kb path.
-if ! grep -qE "kb-tail: mode=global kb=$global_kb " "$tmpdir/.kb-tail5.stderr"; then
+if ! grep -qE "kb-tail: mode=global kb=$global_kb( |$)" "$tmpdir/.kb-tail5.stderr"; then
   echo "FAIL: global mode did not announce kb=$global_kb" >&2
   cat "$tmpdir/.kb-tail5.stderr" >&2
   exit 1
@@ -395,17 +395,17 @@ cat >> "$gl_jsonl" <<EOF
 EOF
 sleep 5
 
-gl_count=$(count_inbox "$global_kb/.kb/inbox")
+gl_count=$(count_inbox "$global_kb/inbox")
 if [[ "$gl_count" != "1" ]]; then
   echo "FAIL: global mode expected 1 inbox file, got $gl_count" >&2
-  ls -la "$global_kb/.kb/inbox" >&2 || true
+  ls -la "$global_kb/inbox" >&2 || true
   cat "$tmpdir/.kb-tail5.stderr" >&2
   exit 1
 fi
-echo "OK: global mode wrote 1 stop event into $global_kb/.kb/inbox"
+echo "OK: global mode wrote 1 stop event into $global_kb/inbox"
 
 # Verify source_cwd is populated with the real cwd (not the encoded form).
-gl_event=$(ls "$global_kb/.kb/inbox"/*.json | head -1)
+gl_event=$(ls "$global_kb/inbox"/*.json | head -1)
 if ! grep -q "\"source_cwd\": \"$fake_project\"" "$gl_event"; then
   echo "FAIL: source_cwd missing or wrong in $gl_event" >&2
   cat "$gl_event" >&2
@@ -420,10 +420,10 @@ git -C "$canon" add skip.txt
 git -C "$canon" -c user.email=t@t -c user.name=t commit -m "skip-in-global" -q
 sleep 5
 
-gl_count_after=$(count_inbox "$global_kb/.kb/inbox")
+gl_count_after=$(count_inbox "$global_kb/inbox")
 if [[ "$gl_count_after" != "1" ]]; then
   echo "FAIL: global mode emitted commit events ($((gl_count_after - 1)) extra) — should skip git" >&2
-  ls -la "$global_kb/.kb/inbox" >&2
+  ls -la "$global_kb/inbox" >&2
   exit 1
 fi
 echo "OK: global mode skipped git commit watching"
@@ -454,7 +454,7 @@ env -i HOME="$HOME" PATH="$PATH" \
 KBPID=$!
 sleep 3
 
-if ! grep -qE "kb-tail: mode=global kb=$wrapper_kb " "$tmpdir/.kb-tail6.stderr"; then
+if ! grep -qE "kb-tail: mode=global kb=$wrapper_kb( |$)" "$tmpdir/.kb-tail6.stderr"; then
   echo "FAIL: wrapper did not surface global mode from sourced env file" >&2
   cat "$tmpdir/.kb-tail6.stderr" >&2
   exit 1

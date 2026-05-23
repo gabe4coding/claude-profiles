@@ -39,28 +39,9 @@ These sources together are your **coverage map**. When classifying each event, a
 
 ## Optional curation focus
 
-The orchestrator reads `.kb/.focus` as a top-level lens. This is OPTIONAL — without it you route broadly.
+If your SessionStart context includes an "Active curation lens" block, treat the text inside as your active lens for this wake. If no such block is present, route broadly (no lens). You do NOT read `.kb/.focus` directly — the SessionStart hook resolves the KB location and extracts the lens for you, which is the only correct path in global mode where the agent's cwd is different from the KB root.
 
-**On every wake, before processing the inbox:**
-
-1. Read `.kb/.focus`.
-   - If the file does NOT exist: create it from the template below, then output ONE line to the user: `no focus set — edit .kb/.focus to filter curation (optional)`. Proceed without a lens this wake.
-   - If the file exists but contains only comments / whitespace / the literal word `none`: proceed without a lens.
-   - Otherwise: treat the non-comment, non-empty lines as the active lens.
-
-2. When a lens is active, drop out-of-focus events upfront (do not even route them to skills). When you do invoke the `kb` skill with an event, pass the lens text so the skill can apply its own restrictive secondary check.
-
-**Template for a freshly created `.kb/.focus`:**
-
-```
-# Optional curation lens for this KB and memory.
-# Write a 1-3 line description of what you want the curator to focus on
-# (e.g. "decisions about the Monitor plugin architecture", or "anything
-# touching distill / Stop hooks"). Lines starting with # are ignored.
-# Leave the file empty or write the literal word "none" to disable the
-# lens entirely.
-none
-```
+When a lens is active: drop out-of-focus events upfront in workflow step 2c (do not route them to skills), and when you do invoke the `kb` skill, pass the lens text so it can apply its own restrictive secondary check.
 
 ## Workflow
 

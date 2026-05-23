@@ -66,6 +66,13 @@ The Atto IV Monitor-restoration helper (`cmdDelegateLinkScanPath`) prints the ru
 **`CLAUDE_PROFILES_DELEGATE=1` is the delegate-side guard for `cmdHookStop`.**
 `cmdDelegateBgDispatch` sets it on the delegate subprocess env. `cmdHookStop` (`distill.go`) bails as soon as it sees this env var — this is what stops a *committing* delegate from advancing the *parent profile's* distill bookmark (the delegate inherits `CLAUDE_PROFILES_WRAPPER_PID` from os.Environ, so without this guard `wrapperContextForHook` would resolve the parent's profile). Keep this guard load-bearing: if you change how `cmd.Env` is built in the dispatcher, make sure `CLAUDE_PROFILES_DELEGATE=1` survives.
 
+**`KB_TAIL_DIR` is the kb dir itself, NOT a parent of `.kb`.**
+The kb-curator plugin's three runtime components (the kb-tail Monitor, the kb-index Stop hook, and the session-start hook) resolve the KB location with the same priority:
+1. `KB_TAIL_DIR` env → used as-is (the directory containing INDEX.md, decisions/, fixes/, sessions/, inbox/, .focus). **No `.kb` is appended.**
+2. `CLAUDE_PROJECT_DIR` env → append `.kb` (this variable names the PROJECT root, not the KB).
+3. git toplevel fallback → append `.kb` (repo root convention).
+The user's mental model matches (1): `KB_TAIL_DIR=$HOME/.kb` means "my KB lives at `$HOME/.kb`" — not "$HOME/.kb/.kb/" (the doubled-`.kb` bug we previously had). When adding a new KB-aware component, follow the same three-tier resolution; doing your own `Path(env) / ".kb"` will silently nest the directory under the user-supplied path.
+
 **Claude Code Monitor subprocesses do NOT inherit env vars from the parent `claude` process.**
 SessionStart / Stop hooks DO inherit env, but Monitors are spawned with a stripped env. Empirically verified: a session launched via `KB_TAIL_DIR=… KB_TAIL_SCAN_ALL_PROJECTS=1 claude-profiles run kb-curator` reaches the agent shell + hooks with the env intact, but the Monitor's kb-tail subprocess sees neither var and falls back to repo mode (exits "not in a git repo" when cwd has none). The plugin works around this with `plugins/kb-curator/scripts/run-kb-tail.sh`: the Monitor command invokes the wrapper, which sources `$HOME/.kb/.kb-tail.env` (or `$KB_TAIL_ENV_FILE`) before exec'ing the Python script. The `kb-global` shell function writes that env file on every invocation so the file stays in sync with the function's intent. If a future Monitor needs runtime configuration, follow the same pattern — do not rely on env propagation.
 

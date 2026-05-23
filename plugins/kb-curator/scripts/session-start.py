@@ -51,12 +51,52 @@ def main_repo_root_from_cwd() -> str | None:
     return str(p.parent.resolve())
 
 
-def resolve_kb_root() -> str | None:
+def resolve_kb_dir() -> Path | None:
+    """Resolve the KB directory itself (the dir containing INDEX.md,
+    decisions/, fixes/, sessions/, inbox/, .focus).
+
+    Priority:
+      1. KB_TAIL_DIR — IS the kb dir directly. No `.kb` appended; the
+         user picked an explicit path.
+      2. CLAUDE_PROJECT_DIR — project root set by Claude Code for hooks;
+         append `.kb` (project-mode convention).
+      3. main repo root via git — append `.kb`.
+    """
     if env := os.environ.get("KB_TAIL_DIR"):
-        return env
+        return Path(env)
     if env := os.environ.get("CLAUDE_PROJECT_DIR"):
-        return env
-    return main_repo_root_from_cwd()
+        return Path(env) / ".kb"
+    rr = main_repo_root_from_cwd()
+    if rr is None:
+        return None
+    return Path(rr) / ".kb"
+
+
+def read_active_lens(kb_dir: Path) -> str:
+    """Extract a curator lens from <kb>/.focus.
+
+    Returns the non-comment / non-empty content joined as a single block,
+    or "" when no active lens (file missing, blank, or only comments, or
+    the literal word `none`). Always read from the resolved KB root —
+    callers must NOT rely on the agent's cwd, which in global mode points
+    elsewhere than the KB itself.
+    """
+    focus = kb_dir / ".focus"
+    if not focus.is_file():
+        return ""
+    try:
+        raw = focus.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.lower() == "none":
+            return ""
+        lines.append(stripped)
+    return "\n".join(lines).strip()
 
 
 def build_context(kb_dir: Path) -> str:
@@ -69,6 +109,21 @@ def build_context(kb_dir: Path) -> str:
         "",
         index.read_text(encoding="utf-8"),
     ]
+    lens = read_active_lens(kb_dir)
+    if lens:
+        parts.append("")
+        parts.append("### Active curation lens")
+        parts.append(
+            "The user has narrowed this KB's scope. Apply this lens when"
+            " classifying inbox events: drop out-of-focus events upfront,"
+            " and pass the lens text to any skill you invoke so it can"
+            " apply its own restrictive secondary check. The lens is"
+            " intentionally restrictive — when in doubt, skip."
+        )
+        parts.append("")
+        parts.append("```")
+        parts.append(lens)
+        parts.append("```")
     by_tag = kb_dir / "INDEX-by-tag.md"
     if by_tag.is_file():
         head_lines = by_tag.read_text(encoding="utf-8").splitlines()[:TAG_INDEX_HEAD_LINES]
@@ -89,10 +144,9 @@ def build_context(kb_dir: Path) -> str:
 
 
 def main() -> int:
-    root = resolve_kb_root()
-    if not root:
+    kb_dir = resolve_kb_dir()
+    if kb_dir is None:
         return 0
-    kb_dir = Path(root) / ".kb"
     if not (kb_dir / "INDEX.md").is_file():
         return 0
     context = build_context(kb_dir)

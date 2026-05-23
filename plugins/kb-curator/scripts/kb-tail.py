@@ -525,24 +525,34 @@ def tick(
 def run(argv: list[str]) -> int:
     cfg = parse_config(argv)
 
-    # Resolve KB root + repo root.
-    #   global mode → cfg.kb_dir (required by parse_config).
-    #   repo mode   → cfg.kb_dir overrides git auto-detection; otherwise
-    #                 main repo root from cwd.
-    kb_root: str
+    # Resolve KB dir + repo root.
+    #   - When the user supplies --kb-dir / KB_TAIL_DIR, that path IS the
+    #     kb dir (the directory containing decisions/, fixes/, sessions/,
+    #     inbox/, .focus). No `.kb` is appended — `KB_TAIL_DIR=$HOME/.kb`
+    #     means "my KB lives at $HOME/.kb", not "$HOME/.kb/.kb".
+    #   - When neither flag nor env is set (repo mode default), kb_dir is
+    #     `<main repo root>/.kb`. The `.kb` subdir is the project-mode
+    #     convention; it does NOT apply to the user-supplied path.
+    # This eliminates the silent doubled-`.kb` bug previously triggered
+    # when a user set KB_TAIL_DIR=$HOME/.kb expecting it to be the kb dir.
     repo_root: str | None
     if cfg.scan_all_projects:
-        kb_root = cfg.kb_dir  # type: ignore[assignment]
+        kb_dir = Path(cfg.kb_dir)  # type: ignore[arg-type]
         repo_root = None
+    elif cfg.kb_dir:
+        kb_dir = Path(cfg.kb_dir)
+        rr = main_repo_root_from_cwd()
+        if rr is None:
+            print("kb-tail: not in a git repo", file=sys.stderr)
+            return 1
+        repo_root = rr
     else:
         rr = main_repo_root_from_cwd()
         if rr is None:
             print("kb-tail: not in a git repo", file=sys.stderr)
             return 1
         repo_root = rr
-        kb_root = cfg.kb_dir or rr
-
-    kb_dir = Path(kb_root) / ".kb"
+        kb_dir = Path(rr) / ".kb"
     inbox_dir = kb_dir / "inbox"
     processed_dir = inbox_dir / "processed"
     try:
@@ -572,7 +582,7 @@ def run(argv: list[str]) -> int:
     )
     mode = "global" if cfg.scan_all_projects else "repo"
     print(
-        f"kb-tail: mode={mode} kb={kb_root} (firstScan={first_scan}) {exclude_msg}",
+        f"kb-tail: mode={mode} kb={kb_dir} (firstScan={first_scan}) {exclude_msg}",
         file=sys.stderr,
     )
 

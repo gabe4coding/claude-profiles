@@ -19,20 +19,22 @@
 set -uo pipefail
 shopt -s nullglob
 
-# KB root resolution priority:
-#   1. KB_TAIL_DIR — explicit override (global mode personal KB, or any
-#      caller that wants kb-tail / kb-index decoupled from git auto-detect)
+# KB dir resolution priority:
+#   1. KB_TAIL_DIR — IS the kb dir directly (no `.kb` appended). Set when
+#      the user wants an explicit location (global personal KB or any
+#      decoupled use).
 #   2. CLAUDE_PROJECT_DIR — set by Claude Code when a hook fires; equals
-#      the cwd the session was launched from
-#   3. git rev-parse --show-toplevel — fallback for direct invocation
-kb_root="${KB_TAIL_DIR:-}"
-if [[ -z "$kb_root" ]]; then
-  kb_root="${CLAUDE_PROJECT_DIR:-}"
+#      the cwd the session was launched from. We append `.kb` here because
+#      this variable names the PROJECT root, not the KB.
+#   3. git rev-parse --show-toplevel — repo root fallback; append `.kb`.
+if [[ -n "${KB_TAIL_DIR:-}" ]]; then
+  kb="$KB_TAIL_DIR"
+elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+  kb="$CLAUDE_PROJECT_DIR/.kb"
+else
+  proj=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+  kb="$proj/.kb"
 fi
-if [[ -z "$kb_root" ]]; then
-  kb_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-fi
-kb="$kb_root/.kb"
 [[ -d "$kb" ]] || exit 0
 
 generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
