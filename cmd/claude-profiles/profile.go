@@ -271,10 +271,17 @@ func listProfiles() ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		// Follow symlinks: a user may symlink an external plugin directory
+		// into ~/.claude-profiles/ to make it discoverable globally without
+		// duplicating files. DirEntry.IsDir() returns false on symlinks
+		// because it inspects the link itself; os.Stat follows the link
+		// and reports the target's mode.
+		full := filepath.Join(profilesDir(), e.Name())
+		info, err := os.Stat(full)
+		if err != nil || !info.IsDir() {
 			continue
 		}
-		if !isProfileDir(filepath.Join(profilesDir(), e.Name())) {
+		if !isProfileDir(full) {
 			continue
 		}
 		names = append(names, e.Name())
