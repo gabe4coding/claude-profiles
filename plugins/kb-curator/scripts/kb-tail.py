@@ -208,9 +208,27 @@ def read_transcript_cwd(path: Path) -> str:
 
 
 def is_self_agent_transcript(path: Path, self_agents: set[str]) -> bool:
-    """True iff one of the first 40 records is `type=agent-name` with a
-    matching `agentName`. Claude Code writes that record near the top of
-    every session started with --agent.
+    """True iff one of the first 40 records identifies this session as
+    running one of the configured self-agents.
+
+    Claude Code writes two distinct marker records at the top of session
+    transcripts, depending on HOW the agent was selected:
+
+    - `type=agent-name`: written when the session is launched with the
+      --agent flag (e.g. `claude --agent foo` or `claude-profiles run foo`
+      which sets it). Payload: `{"agentName": "foo"}`.
+    - `type=agent-setting`: written when the agent is pinned via a plugin's
+      `settings.json` (`"agent": "foo"`). Payload:
+      `{"agentSetting": "<plugin>:<agent>"}` — e.g. `kb-curator:kb-curator`
+      when the kb-curator plugin's settings pins its own agent.
+
+    Missing the second form is what made the curator self-curate: the
+    plugin pins its agent via settings, so the curator's own transcripts
+    are tagged with `agent-setting`, not `agent-name`. Matching only
+    `agent-name` produced a silent miss → self-wake loop. For
+    `agent-setting` we match against the trailing agent name AND the
+    plugin prefix AND the full `plugin:agent` string — whichever the
+    caller passed as --self-agent works.
     """
     if not self_agents:
         return False
@@ -223,12 +241,22 @@ def is_self_agent_transcript(path: Path, self_agents: set[str]) -> bool:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if (
-                    isinstance(rec, dict)
-                    and rec.get("type") == "agent-name"
-                    and rec.get("agentName") in self_agents
-                ):
-                    return True
+                if not isinstance(rec, dict):
+                    continue
+                t = rec.get("type")
+                if t == "agent-name":
+                    if rec.get("agentName") in self_agents:
+                        return True
+                elif t == "agent-setting":
+                    setting = rec.get("agentSetting")
+                    if not isinstance(setting, str) or not setting:
+                        continue
+                    if setting in self_agents:
+                        return True
+                    if ":" in setting:
+                        plugin, agent = setting.split(":", 1)
+                        if agent in self_agents or plugin in self_agents:
+                            return True
     except OSError:
         return False
     return False
@@ -421,16 +449,32 @@ def tick(
             full = str(jsonl)
             if ignored.get(full):
                 continue
+            # Re-probe self-agent on EVERY tick (not just first sight) for
+            # two reasons:
+            #   1. Race: Claude Code may create the transcript file before
+            #      writing the agent-name / agent-setting marker record.
+            #      First-sight probing misses, the file is tracked as
+            #      non-self, and the curator self-curates from then on.
+            #   2. Recovery: a previously-shipped buggy version may have
+            #      already tracked a curator transcript as non-self. The
+            #      re-probe catches it after the next assistant turn and
+            #      moves it into `ignored` without needing manual state
+            #      cleanup.
+            # Cost: one 40-line read per non-ignored transcript per tick.
+            # Negligible compared to the per-tick git calls.
+            if is_self_agent_transcript(jsonl, self_agents):
+                ignored[full] = True
+                offsets.pop(full, None)
+                source_cwds.pop(full, None)
+                print(
+                    f"kb-tail: ignoring self-agent transcript {jsonl.name}",
+                    file=sys.stderr,
+                )
+                continue
             known = offsets.get(full)
             if first_scan or known is None:
-                # New file: detect self-agent, cache source cwd, record current size.
-                if is_self_agent_transcript(jsonl, self_agents):
-                    ignored[full] = True
-                    print(
-                        f"kb-tail: ignoring self-agent transcript {jsonl.name}",
-                        file=sys.stderr,
-                    )
-                    continue
+                # New file (and not self-agent per above probe): cache
+                # source cwd, record current size, never emit retroactively.
                 cwd = read_transcript_cwd(jsonl)
                 if cwd:
                     source_cwds[full] = cwd

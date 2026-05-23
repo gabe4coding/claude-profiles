@@ -210,6 +210,90 @@ if ! grep -q "ignoring self-agent transcript" "$tmpdir/.kb-tail3.stderr"; then
 fi
 echo "OK: --self-agent kb-curator filtered the curator's own transcript"
 
+# --- 5b. agent-setting form: pin via plugin settings.json ----------------
+# Real curator transcripts launched via a plugin's settings.json
+# (`"agent": "kb-curator"`) carry `type=agent-setting` records, NOT
+# `agent-name`. Filter must match both forms. Reproduce the regression:
+# fake transcript with ONLY agent-setting + end_turn → expect 0 emits.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+
+setting_session="11112222-3333-4444-5555-666666666666"
+setting_jsonl="$transcripts_dir/$setting_session.jsonl"
+cat > "$setting_jsonl" <<'EOF'
+{"type":"custom-title","customTitle":"kb-curator","sessionId":"11112222-3333-4444-5555-666666666666"}
+{"type":"agent-setting","agentSetting":"kb-curator:kb-curator","sessionId":"11112222-3333-4444-5555-666666666666"}
+{"type":"permission-mode","permissionMode":"auto","sessionId":"11112222-3333-4444-5555-666666666666"}
+EOF
+
+"${BIN[@]}" --self-agent kb-curator > "$tmpdir/.kb-tail3b.stdout" 2> "$tmpdir/.kb-tail3b.stderr" &
+KBPID=$!
+sleep 3
+
+cat >> "$setting_jsonl" <<'EOF'
+{"type":"assistant","sessionId":"11112222-3333-4444-5555-666666666666","uuid":"s1","timestamp":"2026-05-22T11:30:00Z","message":{"stop_reason":"end_turn"}}
+EOF
+sleep 5
+
+setting_count=$(count_inbox "$canon/.kb/inbox")
+if [[ "$setting_count" != "2" ]]; then
+  echo "FAIL: agent-setting form not recognized — $((setting_count - 2)) extra events leaked through" >&2
+  cat "$tmpdir/.kb-tail3b.stderr" >&2
+  exit 1
+fi
+if ! grep -q "ignoring self-agent transcript" "$tmpdir/.kb-tail3b.stderr"; then
+  echo "FAIL: agent-setting form did not trigger 'ignoring self-agent transcript'" >&2
+  cat "$tmpdir/.kb-tail3b.stderr" >&2
+  exit 1
+fi
+echo "OK: agent-setting form filtered (the curator's real launch path)"
+
+# --- 5c. Race recovery: marker appears AFTER kb-tail has tracked the ----
+# file. Claude Code may create the transcript before writing the
+# agent-setting record; first-sight probing alone would miss this and
+# the file would emit forever. Re-probing each tick must catch the
+# marker once it lands and move the transcript into `ignored`.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+
+race_session="cccccccc-1111-2222-3333-444444444444"
+race_jsonl="$transcripts_dir/$race_session.jsonl"
+# Step 1: file exists but the marker isn't written yet.
+cat > "$race_jsonl" <<'EOF'
+{"type":"custom-title","customTitle":"some-title-no-marker","sessionId":"cccccccc-1111-2222-3333-444444444444"}
+EOF
+
+"${BIN[@]}" --self-agent kb-curator > "$tmpdir/.kb-tail3c.stdout" 2> "$tmpdir/.kb-tail3c.stderr" &
+KBPID=$!
+sleep 3  # kb-tail tracks the file as non-self (no marker yet)
+
+# Step 2: NOW the marker lands.
+cat >> "$race_jsonl" <<'EOF'
+{"type":"agent-setting","agentSetting":"kb-curator:kb-curator","sessionId":"cccccccc-1111-2222-3333-444444444444"}
+EOF
+sleep 3  # next tick must re-probe and catch it
+
+# Step 3: append end_turn. If race recovery worked the file is ignored.
+cat >> "$race_jsonl" <<'EOF'
+{"type":"assistant","sessionId":"cccccccc-1111-2222-3333-444444444444","uuid":"r1","timestamp":"2026-05-22T12:00:00Z","message":{"stop_reason":"end_turn"}}
+EOF
+sleep 5
+
+race_count=$(count_inbox "$canon/.kb/inbox")
+if [[ "$race_count" != "2" ]]; then
+  echo "FAIL: race recovery missed — $((race_count - 2)) extra events leaked through" >&2
+  cat "$tmpdir/.kb-tail3c.stderr" >&2
+  exit 1
+fi
+if ! grep -q "ignoring self-agent transcript .*$race_session" "$tmpdir/.kb-tail3c.stderr"; then
+  echo "FAIL: race recovery did not log 'ignoring self-agent transcript' for late-arrived marker" >&2
+  cat "$tmpdir/.kb-tail3c.stderr" >&2
+  exit 1
+fi
+echo "OK: race recovery — re-probe caught marker appended after first sight"
+
 # --- 6. Worktree unification: .kb/ lives at MAIN root, events from a -----
 #         linked worktree's encoded transcript dir feed the main inbox.
 kill "$KBPID" 2>/dev/null || true
