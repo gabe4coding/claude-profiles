@@ -1,7 +1,7 @@
 [
   {
     "name": "kb-tail",
-    "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/kb-tail.py\" --self-agent kb-curator",
+    "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-kb-tail.sh\" --self-agent kb-curator",
     "description": "Tails session transcripts + git log into .kb/inbox/"
   }
 ]

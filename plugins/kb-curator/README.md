@@ -28,13 +28,23 @@ Each repo gets its own `.kb/` at the main repo root.
 
 ### Global mode (personal cross-project KB)
 
-A single `.kb/` collects events from every project on this machine. Set both env vars
-before launching Claude Code:
+A single `.kb/` collects events from every project on this machine. The Monitor
+process can't rely on shell env vars (Claude Code spawns Monitors with stripped
+env) — write a small config file the Monitor wrapper sources:
 
 ```sh
-export KB_TAIL_DIR="$HOME/.kb"           # wherever you want the KB
-export KB_TAIL_SCAN_ALL_PROJECTS=1       # scan all ~/.claude/projects/*/
+mkdir -p ~/.kb
+cat > ~/.kb/.kb-tail.env <<'EOF'
+KB_TAIL_DIR="$HOME/.kb"
+KB_TAIL_SCAN_ALL_PROJECTS=1
+EOF
 ```
+
+The `kb-global` shell function (see `scripts/` in the project rc snippet) writes
+this file on every invocation and also exports the same vars for the hooks /
+agent that DO inherit env. Plain shell exports without the file work for hooks
+but the Monitor still falls back to repo mode — the file is the canonical
+source of truth.
 
 Mode auto-applies:
 

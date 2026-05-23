@@ -428,5 +428,44 @@ if [[ "$gl_count_after" != "1" ]]; then
 fi
 echo "OK: global mode skipped git commit watching"
 
+# --- 8. run-kb-tail.sh wrapper: sources env file when caller's env -------
+#         is stripped (e.g. when Claude Code Monitor subprocesses don't
+#         inherit parent env). Verifies the wrapper produces the same
+#         global-mode startup as direct env-on-command invocation.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+
+wrapper_kb=$(mktemp -d -t kbtail-wrap)
+wrapper_env="$wrapper_kb/.kb-tail.env"
+cat > "$wrapper_env" <<EOF
+KB_TAIL_DIR="$wrapper_kb"
+KB_TAIL_SCAN_ALL_PROJECTS=1
+EOF
+
+plugin_root="$repo_root/plugins/kb-curator"
+# Strip env so the only path to the values is the .env file (mirrors the
+# Monitor-subprocess env-stripping behavior).
+env -i HOME="$HOME" PATH="$PATH" \
+  KB_TAIL_ENV_FILE="$wrapper_env" \
+  CLAUDE_PLUGIN_ROOT="$plugin_root" \
+  bash "$plugin_root/scripts/run-kb-tail.sh" --self-agent kb-curator \
+  > "$tmpdir/.kb-tail6.stdout" 2> "$tmpdir/.kb-tail6.stderr" &
+KBPID=$!
+sleep 3
+
+if ! grep -qE "kb-tail: mode=global kb=$wrapper_kb " "$tmpdir/.kb-tail6.stderr"; then
+  echo "FAIL: wrapper did not surface global mode from sourced env file" >&2
+  cat "$tmpdir/.kb-tail6.stderr" >&2
+  exit 1
+fi
+echo "OK: run-kb-tail.sh sourced env file when parent env was stripped"
+
+# Cleanup the extra dir.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+rm -rf "$wrapper_kb"
+
 echo
 echo "smoke-kb-tail: ALL PASSED"
