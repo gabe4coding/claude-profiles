@@ -467,5 +467,58 @@ wait "$KBPID" 2>/dev/null || true
 KBPID=""
 rm -rf "$wrapper_kb"
 
+# --- 9. SessionStart hook reads <kb>/.focus and injects the lens. -------
+#         Comment lines and the literal `none` are stripped; the remaining
+#         non-comment text is surfaced as "### Active curation lens" inside
+#         additionalContext. Without this the lens never reaches the
+#         curator in global mode (agent cwd ≠ kb path).
+ss_kb=$(mktemp -d -t kbtail-ss)
+# Minimal INDEX so the hook doesn't bail.
+echo "## tiny" > "$ss_kb/INDEX.md"
+
+# 9a. Active lens: file with one comment + one lens line.
+cat > "$ss_kb/.focus" <<'EOF'
+# this comment line MUST NOT leak into the injected context
+my custom lens about workflow X
+EOF
+env -i HOME="$HOME" PATH="$PATH" KB_TAIL_DIR="$ss_kb" \
+    python3 "$repo_root/plugins/kb-curator/scripts/session-start.py" \
+    > "$tmpdir/.ss-active.json"
+if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+ctx = d["hookSpecificOutput"]["additionalContext"]
+assert "Active curation lens" in ctx, "lens block header missing"
+assert "my custom lens about workflow X" in ctx, "lens text missing"
+assert "this comment line MUST NOT" not in ctx, "comment leaked into lens"
+' "$tmpdir/.ss-active.json"; then
+  echo "FAIL: SessionStart .focus active-lens injection misbehaved" >&2
+  cat "$tmpdir/.ss-active.json" >&2
+  exit 1
+fi
+echo "OK: SessionStart injected .focus content as 'Active curation lens'"
+
+# 9b. Literal `none`: file with only `none` should yield NO lens block.
+cat > "$ss_kb/.focus" <<'EOF'
+# the only non-comment line is the literal none
+none
+EOF
+env -i HOME="$HOME" PATH="$PATH" KB_TAIL_DIR="$ss_kb" \
+    python3 "$repo_root/plugins/kb-curator/scripts/session-start.py" \
+    > "$tmpdir/.ss-none.json"
+if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+ctx = d["hookSpecificOutput"]["additionalContext"]
+assert "Active curation lens" not in ctx, "lens block present despite `none` directive"
+' "$tmpdir/.ss-none.json"; then
+  echo "FAIL: SessionStart didn't honor literal 'none' in .focus" >&2
+  cat "$tmpdir/.ss-none.json" >&2
+  exit 1
+fi
+echo "OK: SessionStart skipped the lens block when .focus is literal 'none'"
+
+rm -rf "$ss_kb"
+
 echo
 echo "smoke-kb-tail: ALL PASSED"

@@ -484,6 +484,14 @@ def tick(
                     pass
                 continue
             cwd = source_cwds.get(full, "")
+            if not cwd:
+                # Symmetric with the self-agent re-probe above: the cwd
+                # field may appear past the initial 30-line probe window
+                # used at first sight. Try again each tick until we
+                # find one, then cache forever.
+                cwd = read_transcript_cwd(jsonl)
+                if cwd:
+                    source_cwds[full] = cwd
             events, new_offset = scan_transcript_stops(jsonl, known, cwd)
             offsets[full] = new_offset
             for ev in events:
