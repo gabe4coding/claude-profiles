@@ -81,6 +81,61 @@ func renderDocCheck(c docCheck) {
 	fmt.Fprintf(os.Stderr, "  %s  %s\n", mark, label)
 }
 
+// ── Version helpers ──────────────────────────────────────────────────────────
+
+// parseClaudeVersion extracts a semver triple from the string emitted by
+// `claude --version`. Handles both "claude 2.1.147" and bare "2.1.147"
+// formats; returns ok=false if no X.Y.Z token is found.
+func parseClaudeVersion(s string) (major, minor, patch int, ok bool) {
+	for _, tok := range strings.Fields(s) {
+		var maj, min, pat int
+		n, _ := fmt.Sscanf(tok, "%d.%d.%d", &maj, &min, &pat)
+		if n == 3 {
+			return maj, min, pat, true
+		}
+	}
+	return 0, 0, 0, false
+}
+
+// versionAtLeast returns true when (maj, min, pat) >= (needMaj, needMin, needPat).
+func versionAtLeast(maj, min, pat, needMaj, needMin, needPat int) bool {
+	if maj != needMaj {
+		return maj > needMaj
+	}
+	if min != needMin {
+		return min > needMin
+	}
+	return pat >= needPat
+}
+
+// badVersionRange describes an inclusive [from, to] range of known-bad
+// Claude Code releases with a human-readable explanation.
+type badVersionRange struct {
+	fromMaj, fromMin, fromPat int
+	toMaj, toMin, toPat       int
+	description               string
+}
+
+// knownBadVersions lists Claude Code releases with confirmed regressions that
+// affect claude-profiles operation. Each entry is an inclusive version range;
+// set from == to for a single-version regression.
+var knownBadVersions = []badVersionRange{
+	{
+		2, 1, 147, 2, 1, 147,
+		"Bash tool exits with code 127 on every command — hooks and delegate sessions fail; upgrade to v2.1.148+",
+	},
+}
+
+// minDelegateVersion is the oldest Claude Code release on which delegate bg
+// sessions are reliable. Below this version, bg sessions re-prompted for tool
+// permissions inside the unattended session, causing the watcher to time out
+// with no actionable diagnostic (fixed in v2.1.146).
+const (
+	minDelegateMaj = 2
+	minDelegateMin = 1
+	minDelegatePat = 146
+)
+
 // ── Individual checks ────────────────────────────────────────────────────────
 
 func checkClaudeBinary() docCheck {
@@ -93,6 +148,30 @@ func checkClaudeBinary() docCheck {
 	if err != nil || version == "" {
 		return docCheck{"claude binary", "warn", path + " (version unknown)"}
 	}
+
+	maj, min, pat, ok := parseClaudeVersion(version)
+	if !ok {
+		return docCheck{"claude binary", "warn", path + " (version unparseable: " + version + ")"}
+	}
+
+	// Check known-bad releases first — these are hard failures.
+	for _, bad := range knownBadVersions {
+		inRange := versionAtLeast(maj, min, pat, bad.fromMaj, bad.fromMin, bad.fromPat) &&
+			!versionAtLeast(maj, min, pat, bad.toMaj, bad.toMin, bad.toPat+1)
+		if inRange {
+			return docCheck{"claude binary", "fail",
+				fmt.Sprintf("%s (%s) — known-bad release: %s", path, version, bad.description)}
+		}
+	}
+
+	// Warn on versions below the minimum reliable delegate baseline (v2.1.146).
+	if !versionAtLeast(maj, min, pat, minDelegateMaj, minDelegateMin, minDelegatePat) {
+		return docCheck{"claude binary", "warn",
+			fmt.Sprintf("%s (%s) — below v2.1.146: delegate bg sessions may silently timeout "+
+				"due to permission re-prompting in unattended sessions; upgrade recommended",
+				path, version)}
+	}
+
 	return docCheck{"claude binary", "ok", path + " (" + version + ")"}
 }
 
