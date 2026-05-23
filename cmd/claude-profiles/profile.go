@@ -390,7 +390,26 @@ func profileExists(name string) bool {
 // pluginSubdirs lists the folder names claude's --plugin-dir auto-discovers.
 // If any of these live inside the profile folder, we load the profile folder
 // as a plugin via --plugin-dir at launch.
-var pluginSubdirs = []string{"commands", "skills", "agents", "hooks"}
+var pluginSubdirs = []string{"commands", "skills", "agents", "hooks", "monitors"}
+
+// resolveMCPConfigPath returns the path claude should receive via
+// --mcp-config for this profile, preferring split format (.mcp.json) over
+// combined (profile.json). Returns "" when neither file exists — callers
+// MUST then skip BOTH --strict-mcp-config and --mcp-config and let claude
+// fall back to its native MCP discovery. This lets plugin-only profiles
+// (e.g. one that only declares monitors/ or agents/) exist on disk
+// without a placeholder .mcp.json: the wrapper no longer forces an MCP
+// config file just to pass --strict-mcp-config.
+func resolveMCPConfigPath(loc ProfileLocation) string {
+	split := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+	if _, err := os.Stat(split); err == nil {
+		return split
+	}
+	if _, err := os.Stat(loc.JSONPath); err == nil {
+		return loc.JSONPath
+	}
+	return ""
+}
 
 // pluginDirFor returns the absolute folder path to pass to `--plugin-dir`
 // for this profile, or "" if the profile bundles no plugin content. The

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 )
 
@@ -45,13 +44,12 @@ func cmdExec(args []string) {
 	// Real profiles: pin claude to the profile's MCP config (split format
 	// prefers .mcp.json; combined falls back to profile.json). Built-ins: let
 	// claude use native MCP discovery — they exist precisely to expose the
-	// native hierarchy without a profile-imposed overlay.
+	// native hierarchy without a profile-imposed overlay. Same path is taken
+	// for plugin-only profiles with no MCP file on disk.
 	if loc.Builtin == "" {
-		mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
-		if _, statErr := os.Stat(mcpConfigPath); statErr != nil {
-			mcpConfigPath = loc.JSONPath
+		if mcp := resolveMCPConfigPath(*loc); mcp != "" {
+			argv = append(argv, "--strict-mcp-config", "--mcp-config", mcp)
 		}
-		argv = append(argv, "--strict-mcp-config", "--mcp-config", mcpConfigPath)
 	}
 	// claudeFlags("") inlines p.Settings (no hook augmentation) and adds
 	// --setting-sources= / --worktree when the profile requests them.

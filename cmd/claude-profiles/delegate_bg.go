@@ -164,11 +164,9 @@ func cmdDelegateBgDispatch(args []string) {
 	//     reference the orchestrator's directory if needed
 	claudeArgs := []string{"--bg"}
 	if loc.Builtin == "" {
-		mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
-		if _, err := os.Stat(mcpConfigPath); err != nil {
-			mcpConfigPath = loc.JSONPath
+		if mcp := resolveMCPConfigPath(*loc); mcp != "" {
+			claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcp)
 		}
-		claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcpConfigPath)
 	}
 
 	// Suppress the auto --worktree from claudeFlags (bg handles worktrees

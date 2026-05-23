@@ -1,0 +1,11 @@
+{
+  "model": "haiku",
+  "agent": "kb-curator",
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "jq -r '\"[kb-curator] \\(.model.display_name) \\(.workspace.current_dir | split(\"/\") | last) \\(.context_window.used_percentage // 0)%\"'"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "kb-curator",
+  "description": "Watches transcripts and commits via a Monitor, curates a local .kb/",
+  "version": "0.1.0",
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  }
+}
