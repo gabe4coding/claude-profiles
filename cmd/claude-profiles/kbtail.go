@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -42,7 +43,7 @@ func cmdKbTail(args []string) {
 		}
 	}
 
-	repoRoot, err := gitOutput("rev-parse", "--show-toplevel")
+	repoRoot, err := mainRepoRootFromCwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kb-tail: not in a git repo (%v)\n", err)
 		os.Exit(1)
@@ -56,7 +57,6 @@ func cmdKbTail(args []string) {
 		os.Exit(1)
 	}
 
-	transcriptsDir := transcriptsDirFor(repoRoot)
 	statePath := filepath.Join(inboxDir, ".kb-tail-state.json")
 	state := loadKbTailState(statePath)
 	firstScan := state.LastSeenSHA == "" && len(state.Offsets) == 0
@@ -73,12 +73,21 @@ func cmdKbTail(args []string) {
 		sort.Strings(names)
 		excludeMsg = "self-agents=" + strings.Join(names, ",")
 	}
-	fmt.Fprintf(os.Stderr, "kb-tail: repo=%s transcripts=%s (firstScan=%v) %s\n",
-		repoRoot, transcriptsDir, firstScan, excludeMsg)
+	fmt.Fprintf(os.Stderr, "kb-tail: repo=%s (firstScan=%v) %s\n",
+		repoRoot, firstScan, excludeMsg)
 
 	interval := 2 * time.Second
 	for {
-		kbTailTick(transcriptsDir, inboxDir, repoRoot, &state, firstScan, selfAgents)
+		// Re-list worktrees every tick: a worktree added mid-run is picked
+		// up without restarting kb-tail. Cost is one git call per 2s, and
+		// the unified .kb/ at repoRoot captures events from every worktree
+		// of the same main repo.
+		worktrees := listWorktrees(repoRoot)
+		transcriptDirs := make([]string, 0, len(worktrees))
+		for _, w := range worktrees {
+			transcriptDirs = append(transcriptDirs, transcriptsDirFor(w))
+		}
+		kbTailTick(transcriptDirs, inboxDir, repoRoot, &state, firstScan, selfAgents)
 		firstScan = false
 		if err := saveKbTailState(statePath, state); err != nil {
 			fmt.Fprintf(os.Stderr, "kb-tail: save state: %v\n", err)
@@ -91,11 +100,18 @@ func cmdKbTail(args []string) {
 	}
 }
 
-func kbTailTick(transcriptsDir, inboxDir, repoRoot string, state *kbTailState, firstScan bool, selfAgents map[string]bool) {
-	// 1. Transcripts
-	if entries, err := os.ReadDir(transcriptsDir); err == nil {
-		if state.IgnoredTranscripts == nil {
-			state.IgnoredTranscripts = map[string]bool{}
+func kbTailTick(transcriptDirs []string, inboxDir, repoRoot string, state *kbTailState, firstScan bool, selfAgents map[string]bool) {
+	// 1. Transcripts — iterate over every worktree's transcript dir so a
+	// unified .kb/ captures events from all worktrees of the same main
+	// repo. state.Offsets keys are absolute paths and are already unique
+	// across worktrees, so no extra namespacing is needed.
+	if state.IgnoredTranscripts == nil {
+		state.IgnoredTranscripts = map[string]bool{}
+	}
+	for _, transcriptsDir := range transcriptDirs {
+		entries, err := os.ReadDir(transcriptsDir)
+		if err != nil {
+			continue
 		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
@@ -136,8 +152,12 @@ func kbTailTick(transcriptsDir, inboxDir, repoRoot string, state *kbTailState, f
 		}
 	}
 
-	// 2. Git commits
-	head, err := gitOutput("rev-parse", "HEAD")
+	// 2. Git commits — explicit cwd = main repo root. rev-list operates on
+	// the shared object DB so worktree branch ancestry is irrelevant; only
+	// HEAD is per-worktree, hence the gitOutputIn for the HEAD query.
+	// Commits made in a linked worktree on a different branch do not
+	// advance main's HEAD and are not auto-captured until they merge.
+	head, err := gitOutputIn(repoRoot, "rev-parse", "HEAD")
 	if err == nil && head != "" && head != state.LastSeenSHA {
 		if firstScan || state.LastSeenSHA == "" {
 			state.LastSeenSHA = head
@@ -397,4 +417,62 @@ func kbShortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// mainRepoRootFromCwd resolves the MAIN repo root from the current working
+// directory, even when cwd is inside a linked worktree. Mechanism:
+// `git rev-parse --git-common-dir` returns the shared common dir (typically
+// `<main>/.git`); its parent is the main repo root. In a non-worktree repo
+// this trivially equals --show-toplevel; in a worktree it unifies all
+// worktrees to a single .kb/ at the main root.
+//
+// Caveat: --separate-git-dir setups (where the common dir lives outside the
+// work tree) would resolve to the wrong parent. That layout is rare and
+// conflicts with other claude-profiles assumptions; not supported.
+func mainRepoRootFromCwd() (string, error) {
+	common, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(common) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		common = filepath.Join(cwd, common)
+	}
+	return filepath.Clean(filepath.Dir(common)), nil
+}
+
+// listWorktrees returns absolute paths of all worktrees attached to the
+// repo at mainRoot — main checkout plus every linked worktree. Used each
+// tick to enumerate transcript dirs that feed the unified .kb/. On failure
+// returns just mainRoot so the curator still works in the common case.
+func listWorktrees(mainRoot string) []string {
+	out, err := gitOutputIn(mainRoot, "worktree", "list", "--porcelain")
+	if err != nil || out == "" {
+		return []string{mainRoot}
+	}
+	var paths []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			paths = append(paths, rest)
+		}
+	}
+	if len(paths) == 0 {
+		return []string{mainRoot}
+	}
+	return paths
+}
+
+// gitOutputIn runs git with an explicit working directory via `-C`. Needed
+// when kb-tail is launched from a worktree but must operate against the
+// main repo (HEAD lookup, worktree enumeration).
+func gitOutputIn(dir string, args ...string) (string, error) {
+	full := append([]string{"-C", dir}, args...)
+	out, err := exec.Command("git", full...).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }

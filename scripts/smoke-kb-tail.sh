@@ -34,6 +34,8 @@ fi
 
 tmpdir=$(mktemp -d -t kbtail)
 transcripts_dir=""
+wt_dir=""
+wt_transcripts_dir=""
 
 cleanup() {
   set +e
@@ -45,8 +47,14 @@ cleanup() {
   if [[ -n "$tmpdir" && -d "$tmpdir" ]]; then
     rm -rf "$tmpdir"
   fi
+  if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    rm -rf "$wt_dir"
+  fi
   if [[ -n "$transcripts_dir" && -d "$transcripts_dir" ]]; then
     rm -rf "$transcripts_dir"
+  fi
+  if [[ -n "$wt_transcripts_dir" && -d "$wt_transcripts_dir" ]]; then
+    rm -rf "$wt_transcripts_dir"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -186,6 +194,65 @@ if ! grep -q "ignoring self-agent transcript" "$tmpdir/.kb-tail3.stderr"; then
   exit 1
 fi
 echo "OK: --self-agent kb-curator filtered the curator's own transcript"
+
+# --- 6. Worktree unification: .kb/ lives at MAIN root, events from a -----
+#         linked worktree's encoded transcript dir feed the main inbox.
+kill "$KBPID" 2>/dev/null || true
+wait "$KBPID" 2>/dev/null || true
+KBPID=""
+
+wt_dir="$tmpdir.wt"
+git -C "$canon" worktree add -q -b kbtail-wt "$wt_dir"
+wt_canon=$(git -C "$wt_dir" rev-parse --show-toplevel)
+wt_enc=$(printf '%s' "$wt_canon" | sed 's|[/.]|-|g')
+wt_transcripts_dir="$HOME/.claude/projects/$wt_enc"
+mkdir -p "$wt_transcripts_dir"
+
+wt_session_id="cafebabe-1111-2222-3333-444444444444"
+wt_jsonl="$wt_transcripts_dir/$wt_session_id.jsonl"
+cat > "$wt_jsonl" <<'EOF'
+{"type":"user","sessionId":"cafebabe-1111-2222-3333-444444444444","uuid":"wu1","timestamp":"2026-05-22T12:00:00Z","message":{}}
+EOF
+
+# Launch kb-tail with cwd inside the worktree. State should resolve back
+# to <main>/.kb/inbox/.kb-tail-state.json, and the worktree transcript
+# should be picked up by listWorktrees() each tick.
+( cd "$wt_dir" && "$BIN" kb-tail > "$tmpdir/.kb-tail4.stdout" 2> "$tmpdir/.kb-tail4.stderr" ) &
+KBPID=$!
+sleep 3
+
+# Verify .kb/ was NOT created under the worktree (would mean main-root
+# resolution failed and the curator wrote to a gitignored throwaway dir).
+if [[ -d "$wt_dir/.kb" ]]; then
+  echo "FAIL: worktree spawn created $wt_dir/.kb (should be at main root)" >&2
+  exit 1
+fi
+echo "OK: worktree spawn did not create .kb/ under the worktree"
+
+# Verify startup log shows MAIN repo root (not worktree path).
+if ! grep -qE "kb-tail: repo=$canon " "$tmpdir/.kb-tail4.stderr"; then
+  echo "FAIL: worktree spawn did not resolve to main repo root" >&2
+  echo "      expected 'repo=$canon ' in stderr; got:" >&2
+  cat "$tmpdir/.kb-tail4.stderr" >&2
+  exit 1
+fi
+echo "OK: worktree spawn resolved repo=$canon (main root)"
+
+# Append end_turn to the worktree's transcript: event must land in the
+# MAIN inbox (count goes 2 → 3).
+cat >> "$wt_jsonl" <<'EOF'
+{"type":"assistant","sessionId":"cafebabe-1111-2222-3333-444444444444","uuid":"wu2","timestamp":"2026-05-22T12:01:00Z","message":{"stop_reason":"end_turn"}}
+EOF
+sleep 5
+
+count=$(count_inbox "$canon/.kb/inbox")
+if [[ "$count" != "3" ]]; then
+  echo "FAIL: worktree end_turn did not produce 1 new inbox event (expected 3, got $count)" >&2
+  ls -la "$canon/.kb/inbox" >&2 || true
+  cat "$tmpdir/.kb-tail4.stderr" >&2
+  exit 1
+fi
+echo "OK: worktree transcript event landed in main .kb/inbox"
 
 echo
 echo "smoke-kb-tail: ALL PASSED"
