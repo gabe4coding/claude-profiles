@@ -481,8 +481,9 @@ func loadProfileAt(path string) (*Profile, error) {
 	}
 
 	dir := filepath.Dir(path)
+	// MCP servers from split-format .mcp.json (overrides anything the
+	// combined profile.json may have already unmarshalled).
 	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
-		// Split format: .mcp.json holds servers; settings.json holds settings.
 		var mcpFile struct {
 			McpServers map[string]ServerConfig `json:"mcpServers"`
 		}
@@ -490,26 +491,31 @@ func loadProfileAt(path string) (*Profile, error) {
 			_ = json.Unmarshal(raw, &mcpFile)
 		}
 		p.McpServers = mcpFile.McpServers
-
-		if raw, err := os.ReadFile(filepath.Join(dir, "settings.json")); err == nil {
-			p.Settings = raw
-			var s map[string]any
-			if json.Unmarshal(raw, &s) == nil {
-				if perms, ok := s["permissions"].(map[string]any); ok {
-					if deny, ok := perms["deny"].([]any); ok {
-						p.DeniedTools = make([]string, 0, len(deny))
-						for _, d := range deny {
-							if str, ok := d.(string); ok {
-								p.DeniedTools = append(p.DeniedTools, str)
-							}
+	}
+	// Settings from split-format settings.json. Loaded independently of
+	// .mcp.json — plugin-only profiles (agents/skills/monitors/hooks but
+	// no MCP servers) still ship a settings.json and must have it honored.
+	// Previously this was gated on `.mcp.json exists`, so plugin-only
+	// profiles silently lost their model / agent / permissions / statusLine.
+	if raw, err := os.ReadFile(filepath.Join(dir, "settings.json")); err == nil {
+		p.Settings = raw
+		var s map[string]any
+		if json.Unmarshal(raw, &s) == nil {
+			if perms, ok := s["permissions"].(map[string]any); ok {
+				if deny, ok := perms["deny"].([]any); ok {
+					p.DeniedTools = make([]string, 0, len(deny))
+					for _, d := range deny {
+						if str, ok := d.(string); ok {
+							p.DeniedTools = append(p.DeniedTools, str)
 						}
 					}
 				}
 			}
 		}
 	} else if len(p.DeniedTools) > 0 {
-		// Old combined format: synthesize permissions.deny into Settings so
-		// claudeFlags doesn't need --disallowedTools.
+		// Old combined format (no settings.json file, profile.json carries
+		// DeniedTools at the top level): synthesize permissions.deny into
+		// p.Settings so claudeFlags doesn't need --disallowedTools.
 		s := parseSettings(p.Settings)
 		if perms, _ := s["permissions"].(map[string]any); perms == nil || perms["deny"] == nil {
 			if perms == nil {

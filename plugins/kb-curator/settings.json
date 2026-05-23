@@ -2,7 +2,7 @@
   "model": "haiku",
   "agent": "kb-curator",
   "permissions": {
-    "defaultMode": "auto"
+    "defaultMode": "acceptEdits"
   },
   "statusLine": {
     "type": "command",
