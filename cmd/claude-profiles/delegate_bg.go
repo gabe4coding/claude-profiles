@@ -373,8 +373,17 @@ func cmdDelegateBgWatcher(args []string) {
 	// next prompt instead of an indefinite stall.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
-	writeDispatchError(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
-		delegateID, bgWatcherAbandonAfter, bgID, bgID))
+	writeDispatchError(dir, fmt.Sprintf(
+		"(delegate %s abandoned by bg watcher after %s — session %s stopped.\n\n"+
+			"Possible causes:\n"+
+			"  • Memory pressure: non-pinned bg sessions are shed first on Claude Code v2.1.147+ "+
+			"(no programmatic pinning flag is available in the CLI).\n"+
+			"  • Permission re-prompting: bg sessions may block on tool-permission prompts "+
+			"before Claude Code v2.1.146; upgrade to v2.1.148+ to rule this out "+
+			"(`claude-profiles doctor` checks your version).\n"+
+			"  • Network failure or a long-running task exceeding the %s watcher budget.\n\n"+
+			"Attach with `claude attach %s` if the session might still be useful.)",
+		delegateID, bgWatcherAbandonAfter, bgID, bgWatcherAbandonAfter, bgID))
 }
 
 // cmdDelegateLinkScanPath prints the absolute path of the running bg

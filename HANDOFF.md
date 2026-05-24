@@ -1,7 +1,7 @@
-# HANDOFF: Version-guard enhancements from issue triage (issues #26–#29)
+# HANDOFF: Version-guard enhancements from issue triage (issues #27–#29)
 
-Issue #26 (version comment bump) was implemented directly; issues #27, #28, #29 are
-enhancement specs awaiting implementation.
+Issues #27 + #28 (doctor version checks) are implemented; issue #29 (memory-pressure
+shedding) is partially done — unconditional parts shipped, pinning blocked on upstream.
 
 ## What's done
 
@@ -11,41 +11,48 @@ enhancement specs awaiting implementation.
   - `CLAUDE.md` (SubagentModel invariant note)
   - `docs/spec-issue-18-subagent-model.md` (context section + dependencies)
 
-## Open items
+- **Issues #27 + #28 (implemented, PR on branch `claude/eloquent-carson-3zoCe`):**
+  - `cmd/claude-profiles/doctor.go`: Added `parseClaudeVersion`, `versionAtLeast`,
+    `knownBadVersions` (v2.1.147 Bash regression), and extended `checkClaudeBinary()`
+    to emit:
+    - **fail** for v2.1.147 (known-bad: Bash tool exit code 127)
+    - **warn** for <v2.1.146 (permission re-prompting in delegate bg sessions)
+    - **ok** for v2.1.148+ (no known issues)
+  - `cmd/claude-profiles/delegate_bg.go`: Watcher timeout `dispatch-error.md` message
+    updated to include hints about memory pressure, permission re-prompting, and upgrade
+    recommendation.
+  - `README.md`: Updated minimum-version note to call out v2.1.147 as known-bad and
+    recommend v2.1.148+.
+  - `cmd/claude-profiles/doctor_test.go` (new): Unit tests for `parseClaudeVersion`,
+    `versionAtLeast`, and the version-classification logic.
 
-### Issues #27 + #28 — `doctor` version checks
-**Spec**: `docs/spec-issues-27-28-doctor-version-checks.md`
+- **Issue #29 — unconditional parts (shipped in the same PR):**
+  - `CLAUDE.md`: Added "Delegate sessions are non-pinned" operational-constraint note,
+    including the investigation result (no `--pin` flag in the CLI as of v2.1.150).
+  - `docs/spec-issue-29-memory-pressure-shedding.md`: Updated with investigation result
+    and a list of remaining blocked items.
+  - Watcher timeout message consolidated: memory-pressure hint merged with the
+    permission re-prompting hint from #27/#28 into a single message.
 
-Both issues require the same core change: extend `checkClaudeBinary()` in `doctor.go`
-to parse `claude --version` and compare against:
-1. A minimum recommended version (v2.1.146 — below this, delegate bg sessions can
-   silently timeout due to permission re-prompting in bg sessions).
-2. A known-bad version table (v2.1.147 — Bash tool exit code 127 regression).
+## Open items (blocked on upstream)
 
-Also: update the watcher timeout `dispatch-error.md` message in `delegate_bg.go`
-(line 375-376) to include an upgrade hint.
+### Issue #29 — programmatic pinning + smoke test
+**Still open** — two remaining tasks:
 
-Estimated size: medium (~80 lines in `doctor.go`, ~5-line message update in
-`delegate_bg.go`, README note, smoke/unit test).
+1. **Programmatic pinning**: No `--pin` or `--priority` flag exists in `claude --bg`
+   as of v2.1.150 (checked 2026-05-24). If Anthropic adds one, add it to
+   `cmdDelegateBgDispatch` alongside `--permission-mode`, and add a `doctor` version
+   check for the minimum version that supports it.
 
-### Issue #29 — Memory-pressure shedding diagnostics
-**Spec**: `docs/spec-issue-29-memory-pressure-shedding.md`
+2. **Smoke test extension**: `scripts/smoke-delegate-bg.sh` does not yet have a
+   mid-run session kill test (simulating memory-pressure shedding). Requires a
+   `CLAUDE_PROFILES_WATCHER_TIMEOUT` env override (or build-tag-gated flag) so the
+   smoke test can use a short abandon window (e.g. 10s) instead of the 30-minute
+   production default. See `docs/spec-issue-29-memory-pressure-shedding.md` for
+   the full test sketch.
 
-Delegate sessions are non-pinned bg sessions and are shed first under memory pressure
-(Claude Code v2.1.147+). Key open question before implementing:
+## Suggested next step
 
-> **Does `claude --bg` accept a `--pin` or `--priority` flag?**
-> Run `claude --bg --help` on a live system. The entire programmatic-pinning branch is
-> contingent on this answer.
-
-Regardless of the answer, two items are unconditional:
-- Watcher timeout message update (mention memory pressure; consolidate with #27/#28 hint).
-- `CLAUDE.md` operational-constraint note for non-pinned shedding.
-
-Estimated size: small-medium for the unconditional parts; medium for pinning if the
-flag exists.
-
-## Suggested order
-
-1. Implement #27 + #28 together (one `checkClaudeBinary` extension, one message update).
-2. Investigate the `--pin` flag, then implement #29.
+1. Re-check `claude --bg --help` after future Claude Code updates for a `--pin` flag.
+2. Add `CLAUDE_PROFILES_WATCHER_TIMEOUT` env override to `delegate_bg.go` (small,
+   ~5 lines) and extend `smoke-delegate-bg.sh` with the kill test.

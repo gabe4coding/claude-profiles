@@ -128,8 +128,21 @@ a build tag) to allow the smoke test to use a shorter abandon window (e.g. 10s).
 5. (Optional) Add `CLAUDE_PROFILES_WATCHER_TIMEOUT` env override for testability.
 6. Extend `scripts/smoke-delegate-bg.sh` with the kill-based shed simulation.
 
-## Open question
+## Investigation result (checked v2.1.150, 2026-05-24)
 
-Does `claude --bg` support a `--pin` flag as of v2.1.147+? This is the key unknown.
-The entire "programmatic pinning" branch of this spec is contingent on the answer.
-Check before implementing step 2.
+**No `--pin`, `--priority`, or equivalent flag exists in the `claude --bg` CLI.**
+Running `claude --help` on v2.1.150 shows no pinning-related flag for background sessions.
+The entire "programmatic pinning" branch of this spec is therefore on hold pending
+an upstream feature addition by Anthropic.
+
+**Unconditional changes shipped** (PR for issues #27/#28/#29 on branch `claude/eloquent-carson-3zoCe`):
+- Watcher timeout `dispatch-error.md` message updated to mention memory pressure,
+  permission re-prompting, and the watcher budget as possible causes.
+- `CLAUDE.md` updated with non-pinned shedding constraint note (including investigation result).
+- Spec files updated with investigation result.
+
+**Remaining open items** (blocked on upstream):
+- If Anthropic adds a pin/priority flag to `claude --bg`, add it to `cmdDelegateBgDispatch`
+  and add a `doctor` version check for the minimum version that supports it.
+- Consider smoke test extension with simulated mid-run process kill once the
+  `CLAUDE_PROFILES_WATCHER_TIMEOUT` env override is added (see implementation plan step 5).

@@ -62,7 +62,11 @@ Make sure `~/go/bin` is on your `PATH`.
 
 ### Requirements
 
-- **Claude Code ≥ v2.1.146.** `/delegate` dispatches via `claude --bg`, and v2.1.146 fixed `--bg` refusing sessions whose task body starts with a slash command or skill invocation (anything like `/delegate orchestrator "/work-on-goal X"` would have failed on older versions). v2.1.144 also added bg sessions to the `/resume` picker — note that **resuming a completed bg delegate is unsupported** (silent context loss + distill bookmark drift; see `CLAUDE.md` invariants).
+- **Claude Code ≥ v2.1.148 recommended** (v2.1.146 minimum for delegate bg sessions).
+  - v2.1.146 fixed bg sessions re-prompting for tool permissions already granted — earlier versions caused silent delegate timeouts.
+  - v2.1.147 has a known Bash tool regression (exit code 127 on every command) that breaks hooks and delegate tasks; **do not use v2.1.147**.
+  - v2.1.146 also fixed `--bg` refusing sessions whose task body starts with a slash command or skill invocation. v2.1.144 added bg sessions to the `/resume` picker — note that **resuming a completed bg delegate is unsupported** (silent context loss + distill bookmark drift; see `CLAUDE.md` invariants).
+  - Run `claude-profiles doctor` to verify your Claude Code version and get actionable warnings.
 
 Sanity check:
 
