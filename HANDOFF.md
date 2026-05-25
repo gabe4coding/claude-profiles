@@ -1,51 +1,64 @@
-# HANDOFF: Version-guard enhancements from issue triage (issues #26–#29)
+# HANDOFF: Issues #27/#28 implemented; enhancements #29/#34 specced; #33/#35 triaged as noise
 
-Issue #26 (version comment bump) was implemented directly; issues #27, #28, #29 are
-enhancement specs awaiting implementation.
+Issues #27 and #28 (doctor version checks + dispatch-error message) are now implemented
+and tested. Issues #29 and #34 are enhancement specs waiting for a PR with the "enhance"
+label. Issues #33 and #35 were triaged as noise (false assumptions vs. codebase).
 
 ## What's done
 
-- **Issue #26 (closed)**: Updated SubagentModel minimum-version notes from v2.1.146 to
-  v2.1.147 in three places:
-  - `cmd/claude-profiles/delegate_bg.go` (inline comment, lines 228-230)
-  - `CLAUDE.md` (SubagentModel invariant note)
-  - `docs/spec-issue-18-subagent-model.md` (context section + dependencies)
+### Issues #27 + #28 — doctor version checks (IMPLEMENTED)
+- Added `parseClaudeVersion` + `versionAtLeast` helpers to `doctor.go`.
+- Added `knownBadVersions` slice (v2.1.147 flagged as known-bad: Bash tool exit-127).
+- Added `minDelegateMaj/Min/Pat` constants (v2.1.146 minimum for reliable delegates).
+- Extended `checkClaudeBinary()` to warn on <v2.1.146 and fail on known-bad releases.
+- Updated `dispatch-error.md` watcher timeout message to list memory pressure,
+  permission re-prompting, and upgrade hint as possible causes.
+- Updated README `Requirements` section with explicit v2.1.148 recommended / v2.1.147
+  known-bad / v2.1.146 minimum notes.
+- Added `doctor_test.go` with unit tests for `parseClaudeVersion`, `versionAtLeast`,
+  and the known-bad/min-version logic.
+
+### Issue #29 — memory-pressure shedding (PARTIAL: unconditional parts done)
+- Added CLAUDE.md invariant note: "Delegate sessions are non-pinned and can be shed
+  under memory pressure (v2.1.147+)."
+- The `dispatch-error.md` message update (already done above) also covers the memory
+  pressure hint.
+- **Open**: investigate whether `claude --bg` supports `--pin` or `--priority` flag
+  (requires a live Claude Code binary). Spec at `docs/spec-issue-29-memory-pressure-shedding.md`.
+
+### Issues #33/#35 — triaged as noise
+- **#33** (v2.1.149 sandbox write tightening): false alarm. All claude-profiles writes
+  go to `~/.claude-profiles/` (home-relative), never to the repo's `.claude/`. The
+  sandbox change is scoped to worktree→main-repo-root writes, which claude-profiles
+  does not do. Closed with explanation.
+- **#35** (v2.1.149 cd/pushd/popd permission tracking): not applicable. The only `cd`
+  in hook/script code is `REPO_DIR=$(cd "$2" && pwd)` in `delegate.go` — a subshell
+  with no persistent cwd change and no subsequent path-sensitive writes. The main.go
+  `cd` runs via tmux/exec.Command, outside Claude's Bash tool entirely. Closed with
+  explanation.
+
+### Issue #34 — /usage subagent cost visibility (SPECCED, not yet implemented)
+- Spec at `docs/spec-issue-34-usage-subagent-cost.md`.
+- Immediate items: README delegate section note + `doctor.go` v2.1.149 advisory.
+- Medium-term: investigate machine-readable usage data for per-profile cost TUI.
 
 ## Open items
 
-### Issues #27 + #28 — `doctor` version checks
-**Spec**: `docs/spec-issues-27-28-doctor-version-checks.md`
+### Issue #29 — investigate `--pin` flag
+**Action**: run `claude --bg --help` on a live system. Check for `--pin`, `--priority`,
+or analogous flag. If found, add to `cmdDelegateBgDispatch` and add a doctor version
+gate. Document result in `docs/spec-issue-29-memory-pressure-shedding.md`.
 
-Both issues require the same core change: extend `checkClaudeBinary()` in `doctor.go`
-to parse `claude --version` and compare against:
-1. A minimum recommended version (v2.1.146 — below this, delegate bg sessions can
-   silently timeout due to permission re-prompting in bg sessions).
-2. A known-bad version table (v2.1.147 — Bash tool exit code 127 regression).
+### Issue #34 — implement the immediate doc + doctor changes
+**Spec**: `docs/spec-issue-34-usage-subagent-cost.md`
 
-Also: update the watcher timeout `dispatch-error.md` message in `delegate_bg.go`
-(line 375-376) to include an upgrade hint.
-
-Estimated size: medium (~80 lines in `doctor.go`, ~5-line message update in
-`delegate_bg.go`, README note, smoke/unit test).
-
-### Issue #29 — Memory-pressure shedding diagnostics
-**Spec**: `docs/spec-issue-29-memory-pressure-shedding.md`
-
-Delegate sessions are non-pinned bg sessions and are shed first under memory pressure
-(Claude Code v2.1.147+). Key open question before implementing:
-
-> **Does `claude --bg` accept a `--pin` or `--priority` flag?**
-> Run `claude --bg --help` on a live system. The entire programmatic-pinning branch is
-> contingent on this answer.
-
-Regardless of the answer, two items are unconditional:
-- Watcher timeout message update (mention memory pressure; consolidate with #27/#28 hint).
-- `CLAUDE.md` operational-constraint note for non-pinned shedding.
-
-Estimated size: small-medium for the unconditional parts; medium for pinning if the
-flag exists.
+Both items are small:
+1. Add a cost/limits note to the README `/delegate` section.
+2. Add a v2.1.149 advisory to `checkClaudeBinary()` in `doctor.go`.
+3. Add test cases in `doctor_test.go`.
 
 ## Suggested order
 
-1. Implement #27 + #28 together (one `checkClaudeBinary` extension, one message update).
-2. Investigate the `--pin` flag, then implement #29.
+1. Implement #34 immediate items (30 min, no investigation needed).
+2. Investigate `--pin` flag, then finish #29 programmatic-pinning branch if the flag
+   exists.

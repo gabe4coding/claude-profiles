@@ -373,7 +373,14 @@ func cmdDelegateBgWatcher(args []string) {
 	// next prompt instead of an indefinite stall.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
-	writeDispatchError(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
+	writeDispatchError(dir, fmt.Sprintf(
+		"(delegate %s abandoned by bg watcher after %s — session %s stopped; "+
+			"possible causes: (1) memory pressure — non-pinned bg sessions are shed first "+
+			"on Claude Code v2.1.147+ constrained systems; (2) permission re-prompting — "+
+			"upgrade to v2.1.146+ to rule out stuck permission prompts in bg sessions "+
+			"(issue #27); (3) network failure or Claude Code crash. "+
+			"Run `claude-profiles doctor` to check your Claude Code version. "+
+			"Attach with `claude attach %s` if the session might still be useful.)",
 		delegateID, bgWatcherAbandonAfter, bgID, bgID))
 }
 
