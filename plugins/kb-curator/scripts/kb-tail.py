@@ -229,6 +229,13 @@ def is_self_agent_transcript(path: Path, self_agents: set[str]) -> bool:
     `agent-setting` we match against the trailing agent name AND the
     plugin prefix AND the full `plugin:agent` string — whichever the
     caller passed as --self-agent works.
+
+    Raises PermissionError if the transcript cannot be opened for reading
+    (the caller marks the file as permanently ignored — otherwise kb-tail
+    would loop forever re-probing an unreadable file). Other OSErrors
+    (e.g. FileNotFoundError from a transcript deleted mid-tick) are
+    treated as transient and yield a `False` return so the next tick can
+    retry.
     """
     if not self_agents:
         return False
@@ -257,6 +264,11 @@ def is_self_agent_transcript(path: Path, self_agents: set[str]) -> bool:
                         plugin, agent = setting.split(":", 1)
                         if agent in self_agents or plugin in self_agents:
                             return True
+    except PermissionError:
+        # Re-raised so the caller can mark the file as permanently
+        # ignored. A transient `return False` would cause kb-tail to
+        # re-probe (and fail) every single tick.
+        raise
     except OSError:
         return False
     return False
@@ -318,14 +330,25 @@ def scan_transcript_stops(
 
 def _parse_ts(s: str | None) -> str:
     """Parse an RFC3339 timestamp from a transcript record, normalising to
-    UTC ISO8601. Falls back to now() on parse failure or missing value.
+    UTC ISO8601. Falls back to now() on parse failure or missing value,
+    emitting a stderr warning so a debugging operator can tell synthetic
+    timestamps apart from real ones (otherwise they're indistinguishable
+    inside the inbox event JSON).
     """
     if s:
         try:
             t = datetime.fromisoformat(s.replace("Z", "+00:00"))
             return t.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         except ValueError:
-            pass
+            print(
+                f"kb-tail: unparseable ts {s!r}, using now()",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            "kb-tail: missing transcript timestamp, using now()",
+            file=sys.stderr,
+        )
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -462,7 +485,21 @@ def tick(
             #      cleanup.
             # Cost: one 40-line read per non-ignored transcript per tick.
             # Negligible compared to the per-tick git calls.
-            if is_self_agent_transcript(jsonl, self_agents):
+            try:
+                is_self = is_self_agent_transcript(jsonl, self_agents)
+            except PermissionError:
+                # Unreadable forever (chmod / EACCES) — mark permanently
+                # ignored so we stop re-probing every tick.
+                ignored[full] = True
+                offsets.pop(full, None)
+                source_cwds.pop(full, None)
+                print(
+                    f"kb-tail: cannot read {jsonl.name} (permission denied), "
+                    "marking as ignored",
+                    file=sys.stderr,
+                )
+                continue
+            if is_self:
                 ignored[full] = True
                 offsets.pop(full, None)
                 source_cwds.pop(full, None)
@@ -547,20 +584,13 @@ def run(argv: list[str]) -> int:
     if cfg.scan_all_projects:
         kb_dir = Path(cfg.kb_dir)  # type: ignore[arg-type]
         repo_root = None
-    elif cfg.kb_dir:
-        kb_dir = Path(cfg.kb_dir)
-        rr = main_repo_root_from_cwd()
-        if rr is None:
-            print("kb-tail: not in a git repo", file=sys.stderr)
-            return 1
-        repo_root = rr
     else:
         rr = main_repo_root_from_cwd()
         if rr is None:
             print("kb-tail: not in a git repo", file=sys.stderr)
             return 1
         repo_root = rr
-        kb_dir = Path(rr) / ".kb"
+        kb_dir = Path(cfg.kb_dir) if cfg.kb_dir else Path(rr) / ".kb"
     inbox_dir = kb_dir / "inbox"
     processed_dir = inbox_dir / "processed"
     try:
