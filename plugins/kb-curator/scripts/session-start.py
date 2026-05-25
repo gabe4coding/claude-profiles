@@ -95,9 +95,12 @@ def resolve_global_kb_dir() -> Path | None:
                 continue
             _, _, value = line.partition("=")
             value = value.strip().strip("\"'")
-            # Expand $HOME / ${HOME} — common in env files written by hand.
-            home = str(Path.home())
-            value = value.replace("${HOME}", home).replace("$HOME", home)
+            # Expand shell variable references ($HOME / ${HOME}) that are
+            # common in hand-written env files.  os.path.expandvars() is
+            # used so that only complete variable tokens are substituted
+            # (e.g. $HOMEPATH is left untouched) and ${VAR} syntax is also
+            # handled correctly.
+            value = os.path.expandvars(value)
             if value:
                 return Path(value)
         # File found but no KB_TAIL_DIR line — stop searching further
@@ -108,7 +111,12 @@ def resolve_global_kb_dir() -> Path | None:
 
 def read_active_lens(kb_dir: Path) -> str:
     """Extract a curator lens from <kb>/.focus. Returns "" when no active
-    lens (file missing, blank, only comments, or literal `none`)."""
+    lens (file missing, blank, only comments, or literal `none`).
+
+    `none` is treated as a kill-switch regardless of where it appears in
+    the file — any non-comment line equal to `none` (case-insensitive)
+    anywhere in the accumulated content disables the lens entirely.
+    """
     focus = kb_dir / ".focus"
     if not focus.is_file():
         return ""
@@ -121,23 +129,31 @@ def read_active_lens(kb_dir: Path) -> str:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if stripped.lower() == "none":
-            return ""
         lines.append(stripped)
-    return "\n".join(lines).strip()
+    # Kill-switch: if the combined non-comment content is solely "none",
+    # the lens is inactive — checked after collecting all lines so that
+    # position doesn't matter.
+    combined = "\n".join(lines).strip()
+    if combined.lower() == "none":
+        return ""
+    return combined
 
 
 def build_local_block(kb_dir: Path) -> str:
     """Full-detail block for the session-local KB: intro + INDEX + lens +
     tag index head + retrieval hint."""
     index = kb_dir / "INDEX.md"
+    try:
+        index_text = index.read_text(encoding="utf-8")
+    except OSError:
+        return ""
     parts = [
         f"A curated knowledge base exists at `{kb_dir}/`. Consult it before"
         " answering questions about this repo's decisions, fixes, or past"
         " sessions — the entries capture rationale, invariants, and lessons"
         " that the codebase itself cannot tell on its own.",
         "",
-        index.read_text(encoding="utf-8"),
+        index_text,
     ]
     lens = read_active_lens(kb_dir)
     if lens:
@@ -156,13 +172,17 @@ def build_local_block(kb_dir: Path) -> str:
         parts.append("```")
     by_tag = kb_dir / "INDEX-by-tag.md"
     if by_tag.is_file():
-        head_lines = by_tag.read_text(encoding="utf-8").splitlines()[:TAG_INDEX_HEAD_LINES]
-        parts.append("")
-        parts.append("### Tag index (head)")
-        parts.append("Full list at `INDEX-by-tag.md`. Use these tag names"
-                     " when reasoning about coverage.")
-        parts.append("")
-        parts.extend(head_lines)
+        try:
+            head_lines = by_tag.read_text(encoding="utf-8").splitlines()[:TAG_INDEX_HEAD_LINES]
+        except OSError:
+            head_lines = []
+        if head_lines:
+            parts.append("")
+            parts.append("### Tag index (head)")
+            parts.append("Full list at `INDEX-by-tag.md`. Use these tag names"
+                         " when reasoning about coverage.")
+            parts.append("")
+            parts.extend(head_lines)
     parts.append("")
     parts.append(
         "When searching: scan `INDEX.md` for buckets, then `INDEX-by-tag.md`"
@@ -178,6 +198,10 @@ def build_global_block(kb_dir: Path) -> str:
     the agent to know it exists and how to dive in — full content is read
     on demand to keep the per-session token cost bounded."""
     index = kb_dir / "INDEX.md"
+    try:
+        index_text = index.read_text(encoding="utf-8")
+    except OSError:
+        return ""
     parts = [
         f"### Personal cross-project KB at `{kb_dir}/`",
         "",
@@ -188,7 +212,7 @@ def build_global_block(kb_dir: Path) -> str:
         " Read it when the user asks about cross-project knowledge, prior"
         " patterns, or what they did in another repo.",
         "",
-        index.read_text(encoding="utf-8"),
+        index_text,
         "",
         "Cross-bucket topics live in `INDEX-by-tag.md` (read on demand).",
     ]
@@ -200,7 +224,9 @@ def main() -> int:
 
     local = resolve_local_kb_dir()
     if local is not None and (local / "INDEX.md").is_file():
-        blocks.append(build_local_block(local))
+        block = build_local_block(local)
+        if block:
+            blocks.append(block)
 
     global_kb = resolve_global_kb_dir()
     if (
@@ -208,7 +234,9 @@ def main() -> int:
         and global_kb != local
         and (global_kb / "INDEX.md").is_file()
     ):
-        blocks.append(build_global_block(global_kb))
+        block = build_global_block(global_kb)
+        if block:
+            blocks.append(block)
 
     if not blocks:
         return 0
