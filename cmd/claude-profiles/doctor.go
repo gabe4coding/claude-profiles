@@ -83,6 +83,69 @@ func renderDocCheck(c docCheck) {
 
 // ── Individual checks ────────────────────────────────────────────────────────
 
+// ── Version helpers ──────────────────────────────────────────────────────────
+
+// parseClaudeVersion parses a Claude CLI version string into (major, minor,
+// patch) components. Handles both "claude 2.1.147" and plain "2.1.147".
+// Returns ok=false if no parseable triple is found.
+func parseClaudeVersion(s string) (major, minor, patch int, ok bool) {
+	for _, tok := range strings.Fields(s) {
+		n, _ := fmt.Sscanf(tok, "%d.%d.%d", &major, &minor, &patch)
+		if n == 3 {
+			return major, minor, patch, true
+		}
+	}
+	return 0, 0, 0, false
+}
+
+// versionAtLeast returns true when (maj, min, pat) >= (needMaj, needMin, needPat).
+func versionAtLeast(maj, min, pat, needMaj, needMin, needPat int) bool {
+	if maj != needMaj {
+		return maj > needMaj
+	}
+	if min != needMin {
+		return min > needMin
+	}
+	return pat >= needPat
+}
+
+// badVersionRange describes a closed range [from, to] of known-broken Claude Code
+// releases. Set from==to for a single version.
+type badVersionRange struct {
+	fromMaj, fromMin, fromPat int
+	toMaj, toMin, toPat       int
+	description               string
+}
+
+// knownBadVersions lists Claude Code releases with confirmed regressions that
+// affect claude-profiles. Add new entries here as they are identified.
+//
+//   - v2.1.147: Bash tool returns exit code 127 on every command.
+//     Affects Stop-hook distill (git commands), all delegate tasks, PromptSubmit hook.
+//     Fixed in v2.1.148.
+var knownBadVersions = []badVersionRange{
+	{2, 1, 147, 2, 1, 147,
+		"Bash tool exits with code 127 on every command — upgrade to v2.1.148+"},
+}
+
+// minDelegateMaj/Min/Pat is the minimum Claude Code version for reliable
+// delegate bg sessions. Below v2.1.146 bg sessions may silently timeout
+// because the auto-classifier triggers permission re-prompts that never
+// resolve inside a headless session (issue #27).
+const (
+	minDelegateMaj, minDelegateMin, minDelegatePat = 2, 1, 146
+)
+
+// recommendedMaj/Min/Pat is the recommended minimum for a fully reliable
+// claude-profiles experience.
+//   - v2.1.149: /insights no longer crashes when delegate session-meta files
+//     have missing optional fields; worktree sandbox write-allowlist tightened
+//     to the shared .git dir only (both improvements affect users running
+//     delegate-heavy workflows).
+const (
+	recommendedMaj, recommendedMin, recommendedPat = 2, 1, 149
+)
+
 func checkClaudeBinary() docCheck {
 	path, err := exec.LookPath("claude")
 	if err != nil {
@@ -93,6 +156,38 @@ func checkClaudeBinary() docCheck {
 	if err != nil || version == "" {
 		return docCheck{"claude binary", "warn", path + " (version unknown)"}
 	}
+
+	maj, min, pat, ok := parseClaudeVersion(version)
+	if !ok {
+		return docCheck{"claude binary", "warn", path + " (version unparseable: " + version + ")"}
+	}
+
+	// Check known-bad releases first — these are hard failures.
+	for _, bad := range knownBadVersions {
+		inRange := versionAtLeast(maj, min, pat, bad.fromMaj, bad.fromMin, bad.fromPat) &&
+			!versionAtLeast(maj, min, pat, bad.toMaj, bad.toMin, bad.toPat+1)
+		if inRange {
+			return docCheck{"claude binary", "fail",
+				fmt.Sprintf("%s (%s) — known-bad: %s", path, version, bad.description)}
+		}
+	}
+
+	// Warn below the minimum reliable delegate baseline (v2.1.146).
+	if !versionAtLeast(maj, min, pat, minDelegateMaj, minDelegateMin, minDelegatePat) {
+		return docCheck{"claude binary", "warn",
+			fmt.Sprintf("%s (%s) — below v%d.%d.%d: delegate bg sessions may silently "+
+				"timeout due to permission re-prompting in bg sessions; upgrade recommended",
+				path, version, minDelegateMaj, minDelegateMin, minDelegatePat)}
+	}
+
+	// Warn below the fully-reliable recommended minimum (v2.1.149).
+	if !versionAtLeast(maj, min, pat, recommendedMaj, recommendedMin, recommendedPat) {
+		return docCheck{"claude binary", "warn",
+			fmt.Sprintf("%s (%s) — below v%d.%d.%d (recommended): /insights may crash "+
+				"after failed delegate sessions; upgrade for full reliability",
+				path, version, recommendedMaj, recommendedMin, recommendedPat)}
+	}
+
 	return docCheck{"claude binary", "ok", path + " (" + version + ")"}
 }
 
