@@ -390,13 +390,21 @@ func cmdDelegateBgWatcher(args []string) {
 	// delivered.txt / delivered-error.md and bailed). Stop the session
 	// and record a dispatch error so the parent gets *something* on its
 	// next prompt instead of an indefinite stall.
+	//
+	// Formatting note: the body is rendered into dispatch-error.md and
+	// surfaced to the user via additionalContext on their next prompt.
+	// Bullet list (not a glued-semicolon sentence) keeps each cause
+	// scannable when triaging — the on-call-at-2am case the reviewer
+	// raised on PR #46.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
 	writeDispatchError(dir, fmt.Sprintf(
-		"(delegate %s abandoned by bg watcher after %s — session %s stopped; "+
-			"possible causes: memory pressure (non-pinned bg sessions shed first on v2.1.147+), "+
-			"network failure, or permission re-prompting (upgrade to Claude Code v2.1.146+ to rule out "+
-			"the last cause); attach with `claude attach %s` if the session might still be useful)",
+		"(delegate %s abandoned by bg watcher after %s — session %s stopped.\n\n"+
+			"Possible causes:\n"+
+			"  - memory pressure (non-pinned bg sessions shed first on v2.1.147+)\n"+
+			"  - network failure\n"+
+			"  - permission re-prompting (upgrade to Claude Code v2.1.146+ to rule out)\n\n"+
+			"Attach with `claude attach %s` if the session might still be useful.)",
 		delegateID, bgWatcherAbandonAfter, bgID, bgID))
 }
 
