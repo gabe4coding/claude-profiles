@@ -164,7 +164,7 @@ Tell the user in 1-2 short lines:
 
 Then go back to whatever the user was working on. Do NOT read the delegate's state.json or jsonl yourself: let the hook handle it on the next prompt.
 
-**Note on push notifications**: the delegate is automatically instructed to call ` + "`PushNotification`" + ` on completion. On Claude Code v2.1.152+, this delivers a mobile/web alert when the delegate finishes — even if the user is not looking at the terminal. On older versions the call is a no-op (silently dropped). No action needed from you.
+**Note on push notifications**: on Claude Code v2.1.152+ the dispatcher appends a ` + "`PushNotification`" + ` completion instruction to every prose delegate task, so the delegate alerts the user's mobile/web client when it finishes — even if they're not looking at the terminal. On older versions the dispatcher probes ` + "`claude --version`" + ` and skips the instruction entirely (the ` + "`PushNotification`" + ` tool isn't registered there, and an unconditional inject would either fail with a tool-not-found error or be self-narrated as noise). No action needed from you either way.
 
 # 4. Live progress (advanced — skip unless asked)
 
