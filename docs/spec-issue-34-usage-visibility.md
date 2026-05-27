@@ -45,5 +45,5 @@ not a reliability concern.
 ## Acceptance criteria (remaining)
 
 1. `/delegate` slash command acknowledgment includes a note about `/usage → subagents`.
-2. (Future) `claude-profiles usage` or hub TUI screen shows per-profile cost, once Claude
-   Code exposes usage data programmatically.
+2. (Blocked until Claude Code exposes usage data programmatically) `claude-profiles usage`
+   or hub TUI screen shows per-profile cost.
