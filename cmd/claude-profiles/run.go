@@ -979,6 +979,19 @@ func cmdHookSessionStart() {
 		// skills directory in the same session — skills installed or updated by
 		// this hook (e.g. per-profile .claude/commands/ entries) are immediately
 		// available without requiring a second session launch (#43).
+		//
+		// On older clients (< v2.1.152) the key is ignored: only additionalContext
+		// reaches the model, no skill reload happens, and any per-profile commands
+		// added mid-session require a second launch to take effect.
+		//
+		// Why we emit it unconditionally today: per-profile skill linking is the
+		// medium-term piece of #42/#43 and hasn't shipped yet, so on v2.1.152+
+		// the field currently rescans a directory whose contents haven't changed
+		// since session start. The rescan is cheap (single readdir, no file IO
+		// per skill that hasn't moved) and the alternative — wiring the field in
+		// later as a one-liner when linking ships — has the same end state with
+		// extra coordination. Keep this comment in sync with the CLAUDE.md
+		// "Non-obvious invariants" entry when linking ships.
 		"reloadSkills": true,
 	}
 
@@ -986,11 +999,22 @@ func cmdHookSessionStart() {
 	// /resume picker, and `claude agents` view (v2.1.152+; ignored by older
 	// versions). Resolved from the wrapper pidfile via wrapperContextForHook so
 	// the title reflects the active profile (#42).
+	//
+	// Older-client behaviour: on Claude Code < v2.1.152 the field is silently
+	// dropped — the session list, /resume picker, and `claude agents` rows all
+	// fall back to the auto-generated "claude (HHmm)" title. Only
+	// additionalContext is honoured on those clients; for someone debugging on
+	// an older box, that's the only signal of the profile in the session UI.
+	//
+	// The profile id is sanitized via sanitizeDisplay (strips `"` and control
+	// chars) so a pathological profile name can't corrupt the rendered title.
+	// Slug-shaped names are unaffected.
 	profileID, _ := wrapperContextForHook(hookEvent.SessionID)
 	if profileID != "" {
-		sessionTitle := profileID + " · claude-profiles"
+		safeID := sanitizeDisplay(profileID)
+		sessionTitle := safeID + " · claude-profiles"
 		if os.Getenv("CLAUDE_PROFILES_DELEGATE") == "1" {
-			sessionTitle = "[delegate] " + profileID
+			sessionTitle = "[delegate] " + safeID
 		}
 		hookOut["sessionTitle"] = sessionTitle
 	}

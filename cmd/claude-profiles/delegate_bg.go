@@ -213,13 +213,21 @@ func cmdDelegateBgDispatch(args []string) {
 	// dispatch failure. Profile Tasks starting with "/" are valid since v2.1.146.
 	//
 	// For prose tasks, append a PushNotification instruction so the delegate
-	// signals completion to the user's mobile/web client (effective on Claude
-	// Code v2.1.152+; silently a no-op on older versions). Skipped for
-	// slash-command tasks to avoid corrupting skill invocation syntax.
+	// signals completion to the user's mobile/web client (#45). The
+	// PushNotification tool only exists on Claude Code v2.1.152+ — on older
+	// versions the delegate would either attempt the call and get a tool-
+	// not-found error or self-narrate the inability, either of which is
+	// noise in the final transcript, not silence. So we gate the injection
+	// on a fresh `claude --version` probe (via shouldInjectPushNotification)
+	// and skip below the threshold. Slash-command tasks are skipped
+	// unconditionally so the appended block can't corrupt skill invocation
+	// syntax. The displayed profile id is sanitized to strip embedded
+	// double-quotes that could otherwise break out of the JSON-string
+	// argument the delegate constructs for PushNotification.
 	task := req.Task
-	if task != "" && !strings.HasPrefix(strings.TrimSpace(task), "/") {
+	if task != "" && !strings.HasPrefix(strings.TrimSpace(task), "/") && shouldInjectPushNotification(binary) {
 		task += "\n\nWhen your task is complete (success or failure), call PushNotification with:\n" +
-			"- title: \"" + req.Profile + " task complete\"\n" +
+			"- title: \"" + sanitizeDisplay(req.Profile) + " task complete\"\n" +
 			"- message: one-sentence summary of what was done or why it failed"
 	}
 	if task != "" {
@@ -574,6 +582,13 @@ const (
 // Truncation is rune-aware (not byte-based): tasks in non-ASCII text
 // must not be split mid-rune, otherwise Agent View renders replacement
 // glyphs in the row name.
+//
+// The profile id is sanitized via sanitizeDisplay (strips double-quotes
+// and control chars) so a pathological profile name can't corrupt the
+// rendered title; profile ids are slug-shaped in practice but this is
+// free defence against the visual-corruption case the reviewer raised.
+// Goal segment sanitization is unnecessary because validateGoalName
+// already rejects every character that would cause trouble here.
 func bgDisplayName(profile, task, goal string) string {
 	const maxTaskRunes = 50
 	t := strings.TrimSpace(task)
@@ -583,11 +598,60 @@ func bgDisplayName(profile, task, goal string) string {
 	if runes := []rune(t); len(runes) > maxTaskRunes {
 		t = string(runes[:maxTaskRunes]) + "…"
 	}
-	base := profile + ": " + t
+	base := sanitizeDisplay(profile) + ": " + t
 	if g := strings.TrimSpace(goal); g != "" {
 		return goalPrefix + g + goalDelim + base
 	}
 	return base
+}
+
+// sanitizeDisplay strips characters that could corrupt visual display or
+// JSON-string interpolation when a string is rendered into a title or
+// notification payload. Specifically removes double-quotes and ASCII
+// control chars (newline, tab, etc. — bgDisplayName already strips \n/\r,
+// but this catches the rest). Profile ids are slug-shaped in practice;
+// this is defensive against user-supplied names that contain " or \t.
+func sanitizeDisplay(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '"' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// shouldInjectPushNotification returns true when the dispatcher should
+// append the PushNotification completion instruction to a delegate's prose
+// task. Gated on `claude --version` ≥ minSubagentStability (v2.1.152, the
+// first release shipping the PushNotification tool). On older versions the
+// tool isn't registered and the instruction would either fail with a
+// tool-not-found error or be self-narrated by the model — both noisy.
+//
+// On any probe failure (binary missing, unparseable output) we
+// conservatively return false: a missing notification is a strictly
+// better failure mode than a noisy transcript on an unknown runtime.
+//
+// The probe is a single `claude --version` fork per dispatch — dispatches
+// are rare (user-initiated /delegate), so the cost is negligible.
+func shouldInjectPushNotification(binary string) bool {
+	if binary == "" {
+		return false
+	}
+	out, err := exec.Command(binary, "--version").Output()
+	if err != nil {
+		return false
+	}
+	maj, min, pat, ok := parseClaudeVersion(strings.TrimSpace(string(out)))
+	if !ok {
+		return false
+	}
+	return versionAtLeast(maj, min, pat, minSubagentStabilityMaj, minSubagentStabilityMin, minSubagentStabilityPat)
 }
 
 // parseGoalFromName extracts the goal name from a bg session's display name.
