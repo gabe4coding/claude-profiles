@@ -62,7 +62,21 @@ Make sure `~/go/bin` is on your `PATH`.
 
 ### Requirements
 
-- **Claude Code ≥ v2.1.146.** `/delegate` dispatches via `claude --bg`, and v2.1.146 fixed `--bg` refusing sessions whose task body starts with a slash command or skill invocation (anything like `/delegate orchestrator "/work-on-goal X"` would have failed on older versions). v2.1.144 also added bg sessions to the `/resume` picker — note that **resuming a completed bg delegate is unsupported** (silent context loss + distill bookmark drift; see `CLAUDE.md` invariants).
+- **Claude Code ≥ v2.1.148 recommended** (see version notes below).
+
+| Version | What breaks without it |
+|---------|------------------------|
+| v2.1.146 | `/delegate` bg sessions may silently timeout due to permission re-prompting |
+| v2.1.147 | **Known bad**: Bash tool exits code 127 on every command — skip this version |
+| v2.1.148 | Minimum with the Bash regression fixed |
+| v2.1.149 | `_worktree` profiles get correct OS-level sandbox isolation (the pre-fix allowlist covered the entire main repo root) |
+| v2.1.152 | `PushNotification` from delegate sessions works correctly; delegate sessions can set session titles; `_subagent_model` profiles no longer risk a background worker crash on subagent cancellation |
+
+`claude-profiles doctor` checks your active Claude Code version against this table automatically.
+
+`/delegate` dispatches via `claude --bg`, and v2.1.146 fixed `--bg` refusing sessions whose task body starts with a slash command or skill invocation (anything like `/delegate orchestrator "/work-on-goal X"` would have failed on older versions). v2.1.144 also added bg sessions to the `/resume` picker — note that **resuming a completed bg delegate is unsupported** (silent context loss + distill bookmark drift; see `CLAUDE.md` invariants).
+
+> **Cost visibility**: each delegate invocation runs as a background subagent and appears under the **subagents** category in `/usage`. If you hit unexpected limits, `/usage` is the right place to diagnose which profiles are driving consumption.
 
 Sanity check:
 
