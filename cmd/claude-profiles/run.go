@@ -919,6 +919,13 @@ Available profiles:
 `
 
 func cmdHookSessionStart() {
+	// Read the hook event from stdin to pick up session_id. Errors are ignored
+	// — the hook still emits useful context even if the event is absent.
+	var hookEvent struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.NewDecoder(os.Stdin).Decode(&hookEvent)
+
 	var sb strings.Builder
 	sb.WriteString(sessionStartHookHeader)
 
@@ -965,12 +972,30 @@ func cmdHookSessionStart() {
 		}
 	}
 
-	out := map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":     "SessionStart",
-			"additionalContext": sb.String(),
-		},
+	hookOut := map[string]any{
+		"hookEventName":     "SessionStart",
+		"additionalContext": sb.String(),
+		// reloadSkills: true causes Claude Code v2.1.152+ to rescan the plugin
+		// skills directory in the same session — skills installed or updated by
+		// this hook (e.g. per-profile .claude/commands/ entries) are immediately
+		// available without requiring a second session launch (#43).
+		"reloadSkills": true,
 	}
+
+	// sessionTitle sets the display name in the Claude Code session list,
+	// /resume picker, and `claude agents` view (v2.1.152+; ignored by older
+	// versions). Resolved from the wrapper pidfile via wrapperContextForHook so
+	// the title reflects the active profile (#42).
+	profileID, _ := wrapperContextForHook(hookEvent.SessionID)
+	if profileID != "" {
+		sessionTitle := profileID + " · claude-profiles"
+		if os.Getenv("CLAUDE_PROFILES_DELEGATE") == "1" {
+			sessionTitle = "[delegate] " + profileID
+		}
+		hookOut["sessionTitle"] = sessionTitle
+	}
+
+	out := map[string]any{"hookSpecificOutput": hookOut}
 	enc, _ := json.Marshal(out)
 	fmt.Println(string(enc))
 }

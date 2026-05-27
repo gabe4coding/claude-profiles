@@ -27,6 +27,9 @@ When you finish a piece of work that should survive a context reset (you complet
 
 ## Non-obvious invariants
 
+**`_worktree` profiles require Claude Code ≥ v2.1.149 for correct OS-level isolation.**
+Before v2.1.149, Claude Code's sandbox write allowlist inside a git worktree session incorrectly covered the *entire main repository root* rather than just the shared `.git` directory. claude-profiles' `cmdHookGuardWorktreeWrites` hook guards at the application layer, but the OS-level sandbox was whitelisting the same paths behind it — any tool call that slipped past the hook had no backstop. v2.1.149 narrows the allowlist to the shared `.git` object store (with `hooks/` and `config` denied). Users below this version running `_worktree: true` profiles have weaker isolation than expected. `claude-profiles doctor` warns when the active version is below v2.1.149 and any `_worktree` profile is configured.
+
 **Profile prefs keys are main-repo absolute paths.**
 `~/.claude-profiles/profile-prefs.json` is keyed by the profile directory's absolute path in the *main* working tree. When code runs from inside a git worktree the profile path goes through `.claude/worktrees/<name>/`, so any lookup or write against the prefs store must pass through `canonicalProfileDir()` first. Forgetting this silently drops all user prefs (distill, isolated, cwd, etc.) in worktree sessions.
 
@@ -53,6 +56,9 @@ JSON tag is `_subagent_model` in both structs (matches `_distill`, `_isolated`, 
 
 **`/delegate` is bg-only; the parent hook reads `state.json` directly.**
 After Atto III the only execution backend is `cmdDelegateBgDispatch` + `cmdDelegateBgWatcher`. The dispatcher writes `bg-session-id.txt` next to `request.json`, and the watcher's *only* job is calling `claude stop <bg-id>` once the session reaches a terminal state — it does not write any result file. The parent's `cmdHookPromptSubmit` walks each delegate dir on every `UserPromptSubmit`, reads `~/.claude/jobs/<bg-id>/state.json` directly (via `collectDelegateForInjection`), extracts the assistant text from `linkScanPath`, injects it as `additionalContext`, and writes a `delivered.txt` marker. Subsequent prompts skip the delegate because of that marker — do not delete it.
+
+**Delegate sessions are non-pinned and can be shed under memory pressure (v2.1.147+).**
+Claude Code v2.1.147 introduced an explicit shedding hierarchy: pinned sessions (Ctrl+T in `claude agents`) survive memory pressure; non-pinned sessions are shed first. Delegate bg sessions are non-pinned. On memory-constrained systems, the runtime will terminate delegate sessions before user-pinned interactive sessions. The watcher detects this identically to a session crash — it polls until timeout, then writes `dispatch-error.md`. No programmatic pinning flag is available in the CLI today; if one becomes available, add it to `cmdDelegateBgDispatch` alongside `--permission-mode`. The `dispatch-error.md` message now names memory pressure as a possible cause alongside permission re-prompting.
 
 **`/resume` of a completed bg delegate is unsupported.**
 Claude Code 2.1.144+ lists bg sessions in `/resume` alongside interactive ones, so a user *can* resume a delegate after it has reached a terminal state. Don't. The delegate-side `CLAUDE_PROFILES_DELEGATE=1` env guard lives only in the original `cmd.Env` and is not inherited by resumed sessions — so a resumed delegate that commits would advance the *parent profile's* distill bookmark via `cmdHookStop`. On the parent side, the `delivered.txt` marker has already been written, so the hook will not re-inject any further output the resumed turn produces. Net effect: silent context loss + a corrupted distill state. Treat `/resume` on a bg delegate as a manual-inspection-only operation; if you need a fresh delegation, dispatch a new one.

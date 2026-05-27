@@ -211,8 +211,19 @@ func cmdDelegateBgDispatch(args []string) {
 	// earlier versions refused to launch a bg session whose only input was a
 	// skill invocation and returned a launch error that looked like a generic
 	// dispatch failure. Profile Tasks starting with "/" are valid since v2.1.146.
-	if req.Task != "" {
-		claudeArgs = append(claudeArgs, req.Task)
+	//
+	// For prose tasks, append a PushNotification instruction so the delegate
+	// signals completion to the user's mobile/web client (effective on Claude
+	// Code v2.1.152+; silently a no-op on older versions). Skipped for
+	// slash-command tasks to avoid corrupting skill invocation syntax.
+	task := req.Task
+	if task != "" && !strings.HasPrefix(strings.TrimSpace(task), "/") {
+		task += "\n\nWhen your task is complete (success or failure), call PushNotification with:\n" +
+			"- title: \"" + req.Profile + " task complete\"\n" +
+			"- message: one-sentence summary of what was done or why it failed"
+	}
+	if task != "" {
+		claudeArgs = append(claudeArgs, task)
 	}
 
 	cmd := exec.Command(binary, claudeArgs...)
@@ -373,7 +384,11 @@ func cmdDelegateBgWatcher(args []string) {
 	// next prompt instead of an indefinite stall.
 	logf("timeout after %s — stopping bg session %s", bgWatcherAbandonAfter, bgID)
 	stopBgSession(bgID, logf)
-	writeDispatchError(dir, fmt.Sprintf("(delegate %s abandoned by bg watcher after %s — session %s stopped; attach with `claude attach %s` if it might still be useful)",
+	writeDispatchError(dir, fmt.Sprintf(
+		"(delegate %s abandoned by bg watcher after %s — session %s stopped; "+
+			"possible causes: memory pressure (non-pinned bg sessions shed first on v2.1.147+), "+
+			"network failure, or permission re-prompting (upgrade to Claude Code v2.1.146+ to rule out "+
+			"the last cause); attach with `claude attach %s` if the session might still be useful)",
 		delegateID, bgWatcherAbandonAfter, bgID, bgID))
 }
 
