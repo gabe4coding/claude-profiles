@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    {
+      "name": "kb-curator",
+      "source": "plugins/kb-curator",
+      "description": "Tail Claude Code transcripts + git into a curated .kb/ (decisions, fixes, sessions) and Claude auto-memory. Two runtime modes via env vars: repo (default, .kb/ at git root) and global (cross-project personal KB at KB_TAIL_DIR)."
+    }
+  ]
+}

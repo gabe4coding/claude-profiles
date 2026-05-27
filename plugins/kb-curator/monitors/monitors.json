@@ -1,0 +1,7 @@
+[
+  {
+    "name": "kb-tail",
+    "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/run-kb-tail.sh\" --self-agent kb-curator",
+    "description": "Tails session transcripts + git log into .kb/inbox/"
+  }
+]

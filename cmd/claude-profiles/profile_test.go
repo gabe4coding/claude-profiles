@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // TestCanonicalProfileDir fixes the path-rewriting contract that
 // canonicalProfileDir / mainRepoRoot rely on. Both functions strip a
@@ -60,6 +65,45 @@ func TestCanonicalProfileDir(t *testing.T) {
 				t.Errorf("canonicalProfileDir(%q) = %q, want %q", tc.dir, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLoadProfileAt_PluginOnlySettings locks the regression fix for the
+// case where a profile ships agents/skills/monitors/hooks + settings.json
+// but no .mcp.json (plugin-only profile, e.g. kb-curator). The previous
+// implementation gated settings.json loading on .mcp.json existence,
+// silently dropping model / agent / permissions / statusLine from
+// every plugin-only profile.
+func TestLoadProfileAt_PluginOnlySettings(t *testing.T) {
+	dir := t.TempDir()
+
+	// Plugin-only layout: settings.json + a plugin-content subdir, no
+	// profile.json and no .mcp.json.
+	settingsJSON := `{
+  "model": "haiku",
+  "agent": "kb-curator",
+  "permissions": {"defaultMode": "auto"}
+}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settingsJSON), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "agents"), 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+
+	p, err := loadProfileAt(filepath.Join(dir, "profile.json"))
+	if err != nil {
+		t.Fatalf("loadProfileAt: %v", err)
+	}
+	if len(p.Settings) == 0 {
+		t.Fatal("expected settings.json content in p.Settings, got empty")
+	}
+	s := string(p.Settings)
+	if !strings.Contains(s, `"model": "haiku"`) {
+		t.Errorf("model not preserved in p.Settings: %s", s)
+	}
+	if !strings.Contains(s, `"agent": "kb-curator"`) {
+		t.Errorf("agent not preserved in p.Settings: %s", s)
 	}
 }
 

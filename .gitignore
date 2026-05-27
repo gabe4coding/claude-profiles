@@ -10,3 +10,9 @@
 
 # macOS
 .DS_Store
+
+# KB curator runtime state — the entire .kb/ tree is regenerated at runtime
+# by the kb-curator plugin (inbox events, indexed entries, INDEX.md files,
+# .focus, decisions/fixes/sessions). Curator output is per-session context,
+# not source code; the plugin recreates it on demand.
+/.kb/

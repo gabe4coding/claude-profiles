@@ -271,10 +271,17 @@ func listProfiles() ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		// Follow symlinks: a user may symlink an external plugin directory
+		// into ~/.claude-profiles/ to make it discoverable globally without
+		// duplicating files. DirEntry.IsDir() returns false on symlinks
+		// because it inspects the link itself; os.Stat follows the link
+		// and reports the target's mode.
+		full := filepath.Join(profilesDir(), e.Name())
+		info, err := os.Stat(full)
+		if err != nil || !info.IsDir() {
 			continue
 		}
-		if !isProfileDir(filepath.Join(profilesDir(), e.Name())) {
+		if !isProfileDir(full) {
 			continue
 		}
 		names = append(names, e.Name())
@@ -390,7 +397,26 @@ func profileExists(name string) bool {
 // pluginSubdirs lists the folder names claude's --plugin-dir auto-discovers.
 // If any of these live inside the profile folder, we load the profile folder
 // as a plugin via --plugin-dir at launch.
-var pluginSubdirs = []string{"commands", "skills", "agents", "hooks"}
+var pluginSubdirs = []string{"commands", "skills", "agents", "hooks", "monitors"}
+
+// resolveMCPConfigPath returns the path claude should receive via
+// --mcp-config for this profile, preferring split format (.mcp.json) over
+// combined (profile.json). Returns "" when neither file exists — callers
+// MUST then skip BOTH --strict-mcp-config and --mcp-config and let claude
+// fall back to its native MCP discovery. This lets plugin-only profiles
+// (e.g. one that only declares monitors/ or agents/) exist on disk
+// without a placeholder .mcp.json: the wrapper no longer forces an MCP
+// config file just to pass --strict-mcp-config.
+func resolveMCPConfigPath(loc ProfileLocation) string {
+	split := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
+	if _, err := os.Stat(split); err == nil {
+		return split
+	}
+	if _, err := os.Stat(loc.JSONPath); err == nil {
+		return loc.JSONPath
+	}
+	return ""
+}
 
 // pluginDirFor returns the absolute folder path to pass to `--plugin-dir`
 // for this profile, or "" if the profile bundles no plugin content. The
@@ -462,8 +488,9 @@ func loadProfileAt(path string) (*Profile, error) {
 	}
 
 	dir := filepath.Dir(path)
+	// MCP servers from split-format .mcp.json (overrides anything the
+	// combined profile.json may have already unmarshalled).
 	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
-		// Split format: .mcp.json holds servers; settings.json holds settings.
 		var mcpFile struct {
 			McpServers map[string]ServerConfig `json:"mcpServers"`
 		}
@@ -471,26 +498,31 @@ func loadProfileAt(path string) (*Profile, error) {
 			_ = json.Unmarshal(raw, &mcpFile)
 		}
 		p.McpServers = mcpFile.McpServers
-
-		if raw, err := os.ReadFile(filepath.Join(dir, "settings.json")); err == nil {
-			p.Settings = raw
-			var s map[string]any
-			if json.Unmarshal(raw, &s) == nil {
-				if perms, ok := s["permissions"].(map[string]any); ok {
-					if deny, ok := perms["deny"].([]any); ok {
-						p.DeniedTools = make([]string, 0, len(deny))
-						for _, d := range deny {
-							if str, ok := d.(string); ok {
-								p.DeniedTools = append(p.DeniedTools, str)
-							}
+	}
+	// Settings from split-format settings.json. Loaded independently of
+	// .mcp.json — plugin-only profiles (agents/skills/monitors/hooks but
+	// no MCP servers) still ship a settings.json and must have it honored.
+	// Previously this was gated on `.mcp.json exists`, so plugin-only
+	// profiles silently lost their model / agent / permissions / statusLine.
+	if raw, err := os.ReadFile(filepath.Join(dir, "settings.json")); err == nil {
+		p.Settings = raw
+		var s map[string]any
+		if json.Unmarshal(raw, &s) == nil {
+			if perms, ok := s["permissions"].(map[string]any); ok {
+				if deny, ok := perms["deny"].([]any); ok {
+					p.DeniedTools = make([]string, 0, len(deny))
+					for _, d := range deny {
+						if str, ok := d.(string); ok {
+							p.DeniedTools = append(p.DeniedTools, str)
 						}
 					}
 				}
 			}
 		}
 	} else if len(p.DeniedTools) > 0 {
-		// Old combined format: synthesize permissions.deny into Settings so
-		// claudeFlags doesn't need --disallowedTools.
+		// Old combined format (no settings.json file, profile.json carries
+		// DeniedTools at the top level): synthesize permissions.deny into
+		// p.Settings so claudeFlags doesn't need --disallowedTools.
 		s := parseSettings(p.Settings)
 		if perms, _ := s["permissions"].(map[string]any); perms == nil || perms["deny"] == nil {
 			if perms == nil {

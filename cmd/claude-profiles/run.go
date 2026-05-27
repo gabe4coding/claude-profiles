@@ -225,14 +225,14 @@ func cmdRun(args []string) {
 		// format prefers .mcp.json; combined format falls back to profile.json).
 		// For built-ins: skip both --strict-mcp-config and --mcp-config so
 		// claude uses its native MCP discovery — that's the whole point of the
-		// built-in profiles.
+		// built-in profiles. Same path is taken when neither .mcp.json nor
+		// profile.json exists (plugin-only profiles), so the wrapper does not
+		// require a placeholder MCP file just to be launchable.
 		claudeArgs := []string{"claude"}
 		if loc.Builtin == "" {
-			mcpConfigPath := filepath.Join(filepath.Dir(loc.JSONPath), ".mcp.json")
-			if _, err := os.Stat(mcpConfigPath); err != nil {
-				mcpConfigPath = loc.JSONPath
+			if mcp := resolveMCPConfigPath(*loc); mcp != "" {
+				claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcp)
 			}
-			claudeArgs = append(claudeArgs, "--strict-mcp-config", "--mcp-config", mcpConfigPath)
 		}
 		claudeArgs = append(claudeArgs, claudeFlags(p, settingsPath)...)
 		// Always load the wrapper-plugin so /handoff survives --setting-sources=
